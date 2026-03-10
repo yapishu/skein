@@ -1,5 +1,5 @@
 /-  *skein
-/+  dbug, verb, default-agent
+/+  dbug, verb, default-agent, server
 |%
 ::  configuration
 ::
@@ -499,6 +499,165 @@
   |=  [app=app-id backlog=(list envelope)]
   ^-  (list card)
   (turn backlog |=(env=envelope (message-card env)))
+::
+::  http helpers
+::
+++  give-http-response
+  |=  [eyre-id=@ta status=@ud headers=(list [@t @t]) body=(unit octs)]
+  ^-  (list card)
+  %+  give-simple-payload:app:server  eyre-id
+  [[status headers] body]
+::
+++  give-json-response
+  |=  [eyre-id=@ta jon=json]
+  ^-  (list card)
+  %+  give-simple-payload:app:server  eyre-id
+  (json-response:gen:server jon)
+::
+++  stats-json
+  |=  $:  our=ship
+          apps=(set app-id)
+          relays=(map relay-id relay-descriptor)
+          seen=(map relay-step @da)
+          routes=(list route-log)
+          mix=mix-state
+      ==
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p our)]
+      ['apps' (numb:enjs:format ~(wyt in apps))]
+      ['relays' (numb:enjs:format ~(wyt by relays))]
+      ['seen' (numb:enjs:format ~(wyt by seen))]
+      ['batch' (numb:enjs:format (lent batch.mix))]
+      ['routes' (numb:enjs:format (lent routes))]
+      ['hasTimer' b+?=(^ timer.mix)]
+  ==
+::
+++  relays-json
+  |=  relays=(map relay-id relay-descriptor)
+  ^-  json
+  :-  %a
+  %+  turn  ~(tap by relays)
+  |=  [rid=relay-id rd=relay-descriptor]
+  %-  pairs:enjs:format
+  :~  ['relay' s+relay.rd]
+      ['ship' s+(scot %p ship.rd)]
+      ['hasKey' b+?=(^ key.rd)]
+      ['weight' (numb:enjs:format weight.rd)]
+      :-  'delay'
+      ?~  default-delay.rd  ~
+      s+(scot %dr u.default-delay.rd)
+      :-  'expiry'
+      ?~  expiry.rd  ~
+      s+(scot %da u.expiry.rd)
+  ==
+::
+++  routes-json
+  |=  routes=(list route-log)
+  ^-  json
+  :-  %a
+  %+  turn  routes
+  |=  rl=route-log
+  %-  pairs:enjs:format
+  :~  ['cellId' s+(scot %uv cell-id.rl)]
+      ['routeId' s+(scot %uv route-id.rl)]
+      :-  'target'
+      s+(crip "{(trip (scot %p ship.target.rl))}/{(trip app.target.rl)}")
+      ['hops' a+(turn hops.rl |=(s=ship s+(scot %p s)))]
+      :-  'selectedAt'
+      (numb:enjs:format (div (sub selected-at.rl ~1970.1.1) ~s1))
+  ==
+::
+++  apps-json
+  |=  apps=(set app-id)
+  ^-  json
+  a+(turn ~(tap in apps) |=(a=app-id s+a))
+::
+++  index-html
+  ^-  @t
+  '''
+  <!DOCTYPE html>
+  <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>skein</title>
+  <style>
+  * { margin: 0; padding: 0; box-sizing: border-box }
+  body { font-family: monospace; background: #111; color: #ccc; padding: 24px; max-width: 900px; margin: 0 auto }
+  h1 { color: #fff; margin-bottom: 4px; font-size: 20px }
+  .sub { color: #666; margin-bottom: 20px; font-size: 13px }
+  .cards { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap }
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 14px; min-width: 110px }
+  .card .n { font-size: 24px; color: #fff; font-weight: bold }
+  .card .l { font-size: 11px; color: #666; margin-top: 2px }
+  h2 { color: #fff; font-size: 14px; margin: 16px 0 6px }
+  table { width: 100%; border-collapse: collapse; font-size: 12px }
+  th { text-align: left; color: #666; border-bottom: 1px solid #333; padding: 5px 8px; font-weight: normal }
+  td { padding: 5px 8px; border-bottom: 1px solid #1e1e1e; word-break: break-all }
+  .tag { display: inline-block; background: #222; border: 1px solid #333; border-radius: 3px; padding: 2px 8px; font-size: 12px; margin: 2px }
+  .ok { color: #5b5 } .dim { color: #555 }
+  .trunc { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom }
+  #status { font-size: 11px; color: #444; margin-top: 12px }
+  </style></head><body>
+  <h1>skein</h1>
+  <div class="sub" id="ship"></div>
+  <div class="cards" id="stats"></div>
+  <h2>relays</h2>
+  <table id="relays"><thead><tr><th>id</th><th>ship</th><th>key</th><th>weight</th><th>delay</th><th>expiry</th></tr></thead><tbody></tbody></table>
+  <h2>recent routes</h2>
+  <table id="routes"><thead><tr><th>cell</th><th>target</th><th>hops</th><th>time</th></tr></thead><tbody></tbody></table>
+  <h2>bound apps</h2>
+  <div id="apps"></div>
+  <div id="status"></div>
+  <script>
+  var B = "/apps/skein/api";
+  function el(id) { return document.getElementById(id) }
+  function qs(sel) { return document.querySelector(sel) }
+  function cd(n, label) {
+    return "<div class=\"card\"><div class=\"n\">" + n + "</div><div class=\"l\">" + label + "</div></div>";
+  }
+  async function load() {
+    try {
+      var res = await Promise.all(
+        ["/stats", "/relays", "/routes", "/apps"].map(function(p) {
+          return fetch(B + p).then(function(r) { return r.json() });
+        })
+      );
+      var s = res[0], rl = res[1], rt = res[2], ap = res[3];
+      el("ship").textContent = s.ship || "";
+      el("stats").innerHTML =
+        cd(s.apps, "bound apps") + cd(s.relays, "relays") +
+        cd(s.seen, "seen cache") + cd(s.batch, "batch queue") +
+        cd(s.routes, "routes logged") +
+        cd(s.hasTimer ? "on" : "off", "epoch timer");
+      var rb = qs("#relays tbody");
+      if (!rl.length) {
+        rb.innerHTML = "<tr><td colspan=\"6\" class=\"dim\">no relays configured</td></tr>";
+      } else {
+        rb.innerHTML = rl.map(function(r) {
+          return "<tr><td>" + r.relay + "</td><td>" + r.ship + "</td><td>" +
+            (r.hasKey ? "<span class=\"ok\">yes</span>" : "<span class=\"dim\">none</span>") +
+            "</td><td>" + r.weight + "</td><td class=\"dim\">" + (r.delay || "-") +
+            "</td><td class=\"dim\">" + (r.expiry || "-") + "</td></tr>";
+        }).join("");
+      }
+      var rr = qs("#routes tbody");
+      if (!rt.length) {
+        rr.innerHTML = "<tr><td colspan=\"4\" class=\"dim\">no routes yet</td></tr>";
+      } else {
+        rr.innerHTML = rt.map(function(r) {
+          return "<tr><td><span class=\"trunc\">" + r.cellId + "</span></td><td>" +
+            r.target + "</td><td>" + r.hops.join(" &gt; ") + "</td><td class=\"dim\">" +
+            new Date(r.selectedAt * 1000).toLocaleString() + "</td></tr>";
+        }).join("");
+      }
+      el("apps").innerHTML = ap.length
+        ? ap.map(function(a) { return "<span class=\"tag\">" + a + "</span>" }).join(" ")
+        : "<span class=\"dim\">none</span>";
+      el("status").textContent = "updated " + new Date().toLocaleTimeString();
+    } catch(e) { el("status").textContent = "error: " + e.message }
+  }
+  load(); setInterval(load, 10000);
+  </script></body></html>
+  '''
 --
 ::
 %+  verb  |
@@ -520,7 +679,9 @@
   =.  recent-routes.state  ~
   =.  mix.state      [~ ~]
   =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-  [timer-cards this]
+  :_  this
+  :_  timer-cards
+  [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
 ::
 ++  on-save
   !>(state)
@@ -534,13 +695,17 @@
     =.  state  [%3 next-id.saved apps.saved queues.saved ~ ~ ~ [~ ~]]
     =.  apps.state  (~(put in apps.state) %cover)
     =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    [cards this]
+    :_  this
+    :_  cards
+    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
   ::
       %1
     =.  state  [%3 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [~ ~]]
     =.  apps.state  (~(put in apps.state) %cover)
     =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    [cards this]
+    :_  this
+    :_  cards
+    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
   ::
       %2
     =/  old-batch=(list pending-forward)
@@ -549,19 +714,28 @@
       [%3 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [old-batch ~]]
     =.  apps.state  (~(put in apps.state) %cover)
     =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    [cards this]
+    :_  this
+    :_  cards
+    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
   ::
       %3
     =.  state  saved
     =.  apps.state  (~(put in apps.state) %cover)
     =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    [cards this]
+    :_  this
+    :_  cards
+    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
   ==
 ::
 ++  on-poke
   |=  [=mark =vase]
   ^-  (quip card _this)
+  |^
   ?+  mark  (on-poke:def mark vase)
+      %handle-http-request
+    =+  !<([eyre-id=@ta req=inbound-request:eyre] vase)
+    (handle-http eyre-id req)
+  ::
       %skein-admin
     ?>  =(our src):bowl
     =/  act  !<(admin-action vase)
@@ -695,6 +869,42 @@
       (dispatch-cell next.u.target cell.u.target hop-delay mix.state now.bowl)
     [(weld base cards) this]
   ==
+  ::
+  ++  handle-http
+    |=  [eyre-id=@ta req=inbound-request:eyre]
+    ^-  (quip card _this)
+    =/  rl=request-line:server  (parse-request-line:server url.request.req)
+    =/  site=(list @t)  site.rl
+    ?.  ?=([%apps %skein *] site)
+      :_  this
+      (give-http-response eyre-id 404 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'not found')))
+    =/  pax=(list @t)  t.t.site
+    ?.  authenticated.req
+      :_  this
+      %+  give-simple-payload:app:server  eyre-id
+      (login-redirect:gen:server request.req)
+    ?+  pax
+      ::  serve HTML for any non-api path (SPA)
+      :_  this
+      (give-http-response eyre-id 200 ~[['content-type' 'text/html']] (some (as-octs:mimes:html index-html)))
+    ::
+        [%api %stats ~]
+      :_  this
+      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state))
+    ::
+        [%api %relays ~]
+      :_  this
+      (give-json-response eyre-id (relays-json relays.state))
+    ::
+        [%api %routes ~]
+      :_  this
+      (give-json-response eyre-id (routes-json recent-routes.state))
+    ::
+        [%api %apps ~]
+      :_  this
+      (give-json-response eyre-id (apps-json apps.state))
+    ==
+  --
 ::
 ++  on-peek
   |=  =path
@@ -737,6 +947,9 @@
     ?.  (~(has in apps.state) app)
       `this
     [(backlog-cards app (flop (queue-for app queues.state))) this]
+  ::
+      [%http-response *]
+    `this
   ==
 ::
 ++  on-leave  on-leave:def
@@ -745,6 +958,9 @@
   |=  [=wire =sign-arvo]
   ^-  (quip card _this)
   ?+  wire  (on-arvo:def wire sign-arvo)
+      [%eyre *]
+    `this
+  ::
       [%epoch ~]
     ?.  ?=(%wake +<.sign-arvo)
       [~ this]

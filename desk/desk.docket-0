@@ -5,5 +5,5 @@
     website+''
     license+'MIT'
     base+'skein'
-    glob-ames+[~zod 0v0]
+    glob-http+['https://pub-5eef062339ec4a0a8839cb95ec1a98a6.r2.dev/glob-0v3.57eli.f730j.lpkdc.64gls.3lhgl.glob' 0v3.57eli.f730j.lpkdc.64gls.3lhgl]
 ==
