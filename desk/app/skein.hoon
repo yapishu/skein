@@ -6,6 +6,8 @@
 ++  seen-ttl  ~h1
 ++  max-routes  100
 ++  epoch-period  ~s30
+++  min-hops  2
+++  cover-chance  3
 ::
 ::  internal types
 ::
@@ -214,6 +216,24 @@
   ?.  (live-relay d now)  ~
   `d
 ::
+++  shuffle-relays
+  |=  [eny=@ relays=(list relay-descriptor)]
+  ^-  (list relay-descriptor)
+  %+  sort  relays
+  |=  [a=relay-descriptor b=relay-descriptor]
+  (lth (mug (sham [eny relay.a])) (mug (sham [eny relay.b])))
+::
+++  unique-hops
+  |=  [relays=(list relay-descriptor) count=@ud exclude=(set ship)]
+  ^-  (list route-hop)
+  ?:  =(count 0)  ~
+  ?~  relays  ~
+  ?:  (~(has in exclude) ship.i.relays)
+    $(relays t.relays)
+  =/  hop=route-hop
+    [ship.i.relays relay.i.relays key.i.relays default-delay.i.relays]
+  [hop $(count (dec count), relays t.relays, exclude (~(put in exclude) ship.i.relays))]
+::
 ++  target-route-hop
   |=  [relays=(map relay-id relay-descriptor) target=ship now=@da]
   ^-  (unit route-hop)
@@ -224,25 +244,21 @@
     $(descriptors t.descriptors)
   `[ship.i.descriptors relay.i.descriptors key.i.descriptors default-delay.i.descriptors]
 ::
-++  take-hops
-  |=  [count=@ud relays=(list relay-descriptor)]
-  ^-  (list route-hop)
-  ?:  =(count 0)  ~
-  ?~  relays  ~
-  :_  $(count (dec count), relays t.relays)
-  [ship.i.relays relay.i.relays key.i.relays default-delay.i.relays]
-::
 ++  select-route
-  |=  [target=endpoint relays=(map relay-id relay-descriptor) now=@da seed=@ud]
+  |=  [target=endpoint relays=(map relay-id relay-descriptor) now=@da eny=@]
   ^-  (unit route)
-  =/  candidates=(list relay-descriptor)  (eligible-relays relays ship.target now)
+  =/  candidates=(list relay-descriptor)
+    (shuffle-relays eny (eligible-relays relays ship.target now))
   =/  final-hop=(unit route-hop)  (target-route-hop relays ship.target now)
-  =/  mids=(list route-hop)  (take-hops 2 candidates)
+  =/  exclude=(set ship)
+    ?~  final-hop  ~
+    (sy ~[ship.target])
+  =/  mids=(list route-hop)  (unique-hops candidates min-hops exclude)
   =/  hops=(list route-hop)
     ?~  final-hop  mids
     (snoc mids u.final-hop)
   ?~  hops  ~
-  `[(sham [seed target now]) hops]
+  `[(sham [eny target now]) hops]
 ::
 ++  route-last-hop
   |=  hops=(list route-hop)
@@ -471,6 +487,14 @@
   =.  batch.mix  [[next cell] batch.mix]
   (ensure-epoch-timer mix now)
 ::
+::  cover traffic
+::
+++  cover-send-card
+  |=  [our=ship]
+  ^-  card
+  =/  req=send-request  [%cover [our %cover] 'cover' [~ ~ ~]]
+  [%pass /cover %agent [our %skein] %poke %skein-send !>(req)]
+::
 ++  backlog-cards
   |=  [app=app-id backlog=(list envelope)]
   ^-  (list card)
@@ -489,13 +513,14 @@
 ++  on-init
   ^-  (quip card _this)
   =.  next-id.state  1
-  =.  apps.state     ~
+  =.  apps.state     (sy ~[%cover])
   =.  queues.state   ~
   =.  relays.state   ~
   =.  seen.state     ~
   =.  recent-routes.state  ~
   =.  mix.state      [~ ~]
-  [~ this]
+  =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+  [timer-cards this]
 ::
 ++  on-save
   !>(state)
@@ -507,25 +532,30 @@
   ?-  -.saved
       %0
     =.  state  [%3 next-id.saved apps.saved queues.saved ~ ~ ~ [~ ~]]
-    [~ this]
+    =.  apps.state  (~(put in apps.state) %cover)
+    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+    [cards this]
   ::
       %1
     =.  state  [%3 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [~ ~]]
-    [~ this]
+    =.  apps.state  (~(put in apps.state) %cover)
+    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+    [cards this]
   ::
       %2
     =/  old-batch=(list pending-forward)
       (turn ~(val by pending.saved) |=(op=old-pending [next.op cell.op]))
     =.  state
       [%3 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [old-batch ~]]
-    ?~  old-batch
-      [~ this]
+    =.  apps.state  (~(put in apps.state) %cover)
     =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
     [cards this]
   ::
       %3
     =.  state  saved
-    [~ this]
+    =.  apps.state  (~(put in apps.state) %cover)
+    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+    [cards this]
   ==
 ::
 ++  on-poke
@@ -542,6 +572,7 @@
       this
     ::
         %unbind
+      ?:  =(app.act %cover)  `this
       =.  apps.state    (~(del in apps.state) app.act)
       =.  queues.state  (~(del by queues.state) app.act)
       :-  [(relay-card [%unbound app.act])]~
@@ -575,7 +606,7 @@
       `this
     =/  resolved-route=(unit route)
       ?~  route.opts.req
-        ?:(=(ship.to.req our.bowl) ~ (select-route to.req relays.state now.bowl next-id.state))
+        ?:(=(ship.to.req our.bowl) ~ (select-route to.req relays.state now.bowl eny.bowl))
       `(hydrate-route u.route.opts.req relays.state)
     =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req]
     =/  env=envelope
@@ -681,6 +712,17 @@
   ::
       [%x %routes ~]
     ``noun+!>(recent-routes.state)
+  ::
+      [%x %stats ~]
+    =/  s
+      :*  apps=~(wyt in apps.state)
+          relays=~(wyt by relays.state)
+          seen=~(wyt by seen.state)
+          routes=(lent recent-routes.state)
+          batch=(lent batch.mix.state)
+          has-timer=?=(^ timer.mix.state)
+      ==
+    ``noun+!>(s)
   ==
 ::
 ++  on-watch
@@ -708,10 +750,21 @@
       [~ this]
     ?^  error.sign-arvo
       =.  mix.state  [~ ~]
-      [~ this]
-    =/  cards=(list card)  (flush-batch batch.mix.state now.bowl)
+      =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+      [timer-cards this]
+    ::  flush pending batch
+    =/  flush-cards=(list card)  (flush-batch batch.mix.state now.bowl)
     =.  mix.state  [~ ~]
-    [cards this]
+    ::  maybe generate cover traffic
+    =/  cover-cards=(list card)
+      ?.  ?&  (gth ~(wyt by relays.state) 0)
+              (lth (mod (mug eny.bowl) cover-chance) 1)
+          ==
+        ~
+      [(cover-send-card our.bowl)]~
+    ::  re-arm epoch timer
+    =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+    [(zing ~[flush-cards cover-cards timer-cards]) this]
   ::
       [%delay *]
     ::  legacy timer from state-2, discard
@@ -719,6 +772,10 @@
   ::
       [%cell *]
     ::  ack from poke delivery, ignore
+    [~ this]
+  ::
+      [%cover ~]
+    ::  ack from cover self-poke, ignore
     [~ this]
   ==
 ++  on-fail   on-fail:def
