@@ -1,0 +1,9 @@
+:~  title+'skein'
+    info+'Mix-network message relay'
+    color+0x3b.4252
+    version+[0 1 0]
+    website+''
+    license+'MIT'
+    base+'skein'
+    glob-ames+[~zod 0v0]
+==
