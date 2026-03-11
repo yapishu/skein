@@ -62,14 +62,62 @@
       mix=mix-state
   ==
 ::
++$  state-4
+  $:  %4
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map relay-step @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+  ==
+::
++$  state-5
+  $:  %5
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map relay-step @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+  ==
+::
++$  state-6
+  $:  %6
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map relay-step @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+  ==
+::
++$  state-7
+  $:  %7
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map relay-step @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+  ==
+::
 +$  persisted-state
   $%  state-0
       state-1
       state-2
       state-3
+      state-4
+      state-5
+      state-6
+      state-7
   ==
 ::
-+$  current-state  state-3
++$  current-state  state-7
 +$  card  card:agent:gall
 ::
 ::  path helpers
@@ -573,6 +621,16 @@
   ^-  json
   a+(turn ~(tap in apps) |=(a=app-id s+a))
 ::
+++  batch-json
+  |=  batch=(list pending-forward)
+  ^-  json
+  :-  %a
+  %+  turn  batch
+  |=  pf=pending-forward
+  %-  pairs:enjs:format
+  :~  ['next' s+(scot %p next.pf)]
+  ==
+::
 ++  index-html
   ^-  @t
   '''
@@ -678,10 +736,18 @@
   =.  seen.state     ~
   =.  recent-routes.state  ~
   =.  mix.state      [~ ~]
+  ::  seed default relay
+  =/  default-relay=relay-descriptor
+    ['sovsef-risfex' ~sovsef-risfex-sitful-hatred ~ 1 ~ ~]
+  =.  relays.state  (~(put by relays.state) 'sovsef-risfex' default-relay)
   =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
   :_  this
-  :_  timer-cards
-  [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
+  %+  weld  timer-cards
+  ^-  (list card)
+  :~  [%pass /eyre/takeover %arvo %e %connect [~ /apps/skein] dap.bowl]
+      [%pass /eyre/takeover %arvo %e %disconnect [~ /apps/skein]]
+      [%pass /eyre/connect %arvo %e %connect [~ /apps/skein/api] dap.bowl]
+  ==
 ::
 ++  on-save
   !>(state)
@@ -690,42 +756,60 @@
   |=  old=vase
   ^-  (quip card _this)
   =/  saved=persisted-state  !<(persisted-state old)
+  |^
   ?-  -.saved
       %0
-    =.  state  [%3 next-id.saved apps.saved queues.saved ~ ~ ~ [~ ~]]
-    =.  apps.state  (~(put in apps.state) %cover)
-    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    :_  this
-    :_  cards
-    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
+    =.  state  [%7 next-id.saved apps.saved queues.saved ~ ~ ~ [~ ~]]
+    finish
   ::
       %1
-    =.  state  [%3 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [~ ~]]
-    =.  apps.state  (~(put in apps.state) %cover)
-    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    :_  this
-    :_  cards
-    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
+    =.  state  [%7 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [~ ~]]
+    finish
   ::
       %2
     =/  old-batch=(list pending-forward)
       (turn ~(val by pending.saved) |=(op=old-pending [next.op cell.op]))
-    =.  state
-      [%3 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [old-batch ~]]
-    =.  apps.state  (~(put in apps.state) %cover)
-    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    :_  this
-    :_  cards
-    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
+    =.  state  [%7 next-id.saved apps.saved queues.saved relays.saved ~ recent-routes.saved [old-batch ~]]
+    finish
   ::
       %3
+    =.  state  [%7 next-id.saved apps.saved queues.saved relays.saved seen.saved recent-routes.saved mix.saved]
+    seed-relay
+  ::
+      %4
+    =.  state  [%7 next-id.saved apps.saved queues.saved relays.saved seen.saved recent-routes.saved mix.saved]
+    seed-relay
+  ::
+      %5
+    =.  state  [%7 next-id.saved apps.saved queues.saved relays.saved seen.saved recent-routes.saved mix.saved]
+    finish
+  ::
+      %6
+    =.  state  [%7 next-id.saved apps.saved queues.saved relays.saved seen.saved recent-routes.saved mix.saved]
+    finish
+  ::
+      %7
     =.  state  saved
-    =.  apps.state  (~(put in apps.state) %cover)
-    =^  cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    :_  this
-    :_  cards
-    [%pass /eyre/connect %arvo %e %connect [~ /apps/skein] %skein]
+    finish
   ==
+  ::
+  ++  seed-relay
+    =?  relays.state  =(~ relays.state)
+      =/  rd=relay-descriptor  ['sovsef-risfex' ~sovsef-risfex-sitful-hatred ~ 1 ~ ~]
+      (~(put by relays.state) 'sovsef-risfex' rd)
+    finish
+  ::
+  ++  finish
+    =.  apps.state  (~(put in apps.state) %cover)
+    =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
+    :_  this
+    %+  weld  timer-cards
+    ^-  (list card)
+    :~  [%pass /eyre/takeover %arvo %e %connect [~ /apps/skein] dap.bowl]
+        [%pass /eyre/takeover %arvo %e %disconnect [~ /apps/skein]]
+        [%pass /eyre/connect %arvo %e %connect [~ /apps/skein/api] dap.bowl]
+    ==
+  --
 ::
 ++  on-poke
   |=  [=mark =vase]
@@ -739,39 +823,7 @@
       %skein-admin
     ?>  =(our src):bowl
     =/  act  !<(admin-action vase)
-    ?-  -.act
-        %bind
-      =.  apps.state  (~(put in apps.state) app.act)
-      :-  [(relay-card [%bound app.act])]~
-      this
-    ::
-        %unbind
-      ?:  =(app.act %cover)  `this
-      =.  apps.state    (~(del in apps.state) app.act)
-      =.  queues.state  (~(del by queues.state) app.act)
-      :-  [(relay-card [%unbound app.act])]~
-      this
-    ::
-        %clear
-      =.  queues.state  (~(del by queues.state) app.act)
-      :-  [(relay-card [%cleared app.act])]~
-      this
-    ::
-        %put-relay
-      =.  relays.state  (~(put by relays.state) relay.descriptor.act descriptor.act)
-      :-  [(relay-card [%relay-added descriptor.act])]~
-      this
-    ::
-        %drop-relay
-      =.  relays.state  (~(del by relays.state) relay.act)
-      :-  [(relay-card [%relay-removed relay.act])]~
-      this
-    ::
-        %clear-seen
-      =.  seen.state  ~
-      :-  [(relay-card [%replay-cleared ~])]~
-      this
-    ==
+    (exec-admin-action act)
   ::
       %skein-send
     ?>  =(our src):bowl
@@ -875,34 +927,148 @@
     ^-  (quip card _this)
     =/  rl=request-line:server  (parse-request-line:server url.request.req)
     =/  site=(list @t)  site.rl
-    ?.  ?=([%apps %skein *] site)
+    ?.  ?=([%apps %skein %api *] site)
       :_  this
       (give-http-response eyre-id 404 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'not found')))
-    =/  pax=(list @t)  t.t.site
+    =/  pax=(list @t)  t.t.t.site
     ?.  authenticated.req
       :_  this
       %+  give-simple-payload:app:server  eyre-id
       (login-redirect:gen:server request.req)
-    ?+  pax
-      ::  serve HTML for any non-api path (SPA)
+    ?+  method.request.req
       :_  this
-      (give-http-response eyre-id 200 ~[['content-type' 'text/html']] (some (as-octs:mimes:html index-html)))
+      (give-http-response eyre-id 405 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'method not allowed')))
     ::
-        [%api %stats ~]
+        %'GET'
+      (handle-get eyre-id pax)
+    ::
+        %'POST'
+      (handle-post eyre-id pax body.request.req)
+    ==
+  ::
+  ++  handle-get
+    |=  [eyre-id=@ta pax=(list @t)]
+    ^-  (quip card _this)
+    ?+  pax
+      :_  this
+      (give-http-response eyre-id 404 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'not found')))
+    ::
+        [%stats ~]
       :_  this
       (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state))
     ::
-        [%api %relays ~]
+        [%relays ~]
       :_  this
       (give-json-response eyre-id (relays-json relays.state))
     ::
-        [%api %routes ~]
+        [%routes ~]
       :_  this
       (give-json-response eyre-id (routes-json recent-routes.state))
     ::
-        [%api %apps ~]
+        [%apps ~]
       :_  this
       (give-json-response eyre-id (apps-json apps.state))
+    ::
+        [%batch ~]
+      :_  this
+      (give-json-response eyre-id (batch-json batch.mix.state))
+    ==
+  ::
+  ++  handle-post
+    |=  [eyre-id=@ta pax=(list @t) body=(unit octs)]
+    ^-  (quip card _this)
+    ?.  ?=(~ pax)
+      :_  this
+      (give-http-response eyre-id 404 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'not found')))
+    ?~  body
+      :_  this
+      (give-http-response eyre-id 400 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'empty body')))
+    =/  jon=(unit json)  (de:json:html q.u.body)
+    ?~  jon
+      :_  this
+      (give-http-response eyre-id 400 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'bad json')))
+    =/  act  (parse-api-action u.jon)
+    ?~  act
+      :_  this
+      (give-http-response eyre-id 400 ~[['content-type' 'text/plain']] (some (as-octs:mimes:html 'unknown action')))
+    =^  cards  this
+      (exec-admin-action u.act)
+    :_  this
+    %+  weld  cards
+    (give-json-response eyre-id (pairs:enjs:format ~[['ok' b+&]]))
+  ::
+  ++  parse-api-action
+    |=  jon=json
+    ^-  (unit admin-action)
+    =/  act=@t
+      ((ot:dejs:format ~[['action' so:dejs:format]]) jon)
+    ?+  act  ~
+        %'put-relay'
+      =/  parsed
+        %.  jon
+        %-  ot:dejs:format
+        :~  ['relay' so:dejs:format]
+            ['ship' (se:dejs:format %p)]
+            ['weight' ni:dejs:format]
+        ==
+      =/  rd=relay-descriptor
+        [-.parsed +<.parsed ~ +>.parsed ~ ~]
+      `[%put-relay rd]
+    ::
+        %'drop-relay'
+      =/  rid=relay-id
+        ((ot:dejs:format ~[['relay' so:dejs:format]]) jon)
+      `[%drop-relay rid]
+    ::
+        %'clear-seen'
+      `[%clear-seen ~]
+    ::
+        %'bind-app'
+      =/  app=app-id
+        ((ot:dejs:format ~[['app' so:dejs:format]]) jon)
+      `[%bind app]
+    ::
+        %'unbind-app'
+      =/  app=app-id
+        ((ot:dejs:format ~[['app' so:dejs:format]]) jon)
+      `[%unbind app]
+    ==
+  ::
+  ++  exec-admin-action
+    |=  act=admin-action
+    ^-  (quip card _this)
+    ?-  -.act
+        %bind
+      =.  apps.state  (~(put in apps.state) app.act)
+      :-  [(relay-card [%bound app.act])]~
+      this
+    ::
+        %unbind
+      ?:  =(app.act %cover)  `this
+      =.  apps.state    (~(del in apps.state) app.act)
+      =.  queues.state  (~(del by queues.state) app.act)
+      :-  [(relay-card [%unbound app.act])]~
+      this
+    ::
+        %clear
+      =.  queues.state  (~(del by queues.state) app.act)
+      :-  [(relay-card [%cleared app.act])]~
+      this
+    ::
+        %put-relay
+      =.  relays.state  (~(put by relays.state) relay.descriptor.act descriptor.act)
+      :-  [(relay-card [%relay-added descriptor.act])]~
+      this
+    ::
+        %drop-relay
+      =.  relays.state  (~(del by relays.state) relay.act)
+      :-  [(relay-card [%relay-removed relay.act])]~
+      this
+    ::
+        %clear-seen
+      =.  seen.state  ~
+      :-  [(relay-card [%replay-cleared ~])]~
+      this
     ==
   --
 ::

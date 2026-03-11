@@ -3,6 +3,7 @@
     color+0x3b.4252
     version+[0 1 0]
     website+''
+    image+'https://pub-5eef062339ec4a0a8839cb95ec1a98a6.r2.dev/skein.png'
     license+'MIT'
     base+'skein'
     glob-http+['https://pub-5eef062339ec4a0a8839cb95ec1a98a6.r2.dev/glob-0v3.57eli.f730j.lpkdc.64gls.3lhgl.glob' 0v3.57eli.f730j.lpkdc.64gls.3lhgl]
