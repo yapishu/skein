@@ -38,13 +38,10 @@ const App = {
         SkeinAPI.getBatch(),
       ]);
       if (stats.status === 'fulfilled')  this.state.stats = stats.value;
-      if (apps.status === 'fulfilled')   this.state.apps = apps.value.apps || [];
-      if (relays.status === 'fulfilled') this.state.relays = relays.value.relays || [];
-      if (routes.status === 'fulfilled') this.state.routes = routes.value.routes || [];
-      if (batch.status === 'fulfilled') {
-        this.state.batch = batch.value.batch || [];
-        this.state.batchTimer = batch.value.timer || null;
-      }
+      if (apps.status === 'fulfilled')   this.state.apps = Array.isArray(apps.value) ? apps.value : [];
+      if (relays.status === 'fulfilled') this.state.relays = Array.isArray(relays.value) ? relays.value : [];
+      if (routes.status === 'fulfilled') this.state.routes = Array.isArray(routes.value) ? routes.value : [];
+      if (batch.status === 'fulfilled')  this.state.batch = Array.isArray(batch.value) ? batch.value : [];
     } catch (e) {
       console.error('refresh failed:', e);
     }
@@ -172,8 +169,8 @@ const App = {
 
   renderDashboard() {
     const s = this.state.stats;
-    const timerStatus = s.has_timer ? 'active' : 'idle';
-    const timerClass = s.has_timer ? 'status-on' : 'status-off';
+    const timerStatus = s.hasTimer ? 'active' : 'idle';
+    const timerClass = s.hasTimer ? 'status-on' : 'status-off';
     return `
       <div class="page-header">
         <h2>Dashboard</h2>
@@ -260,7 +257,7 @@ const App = {
             <div class="panel-body">
               ${this.state.routes.length ? this.state.routes.slice(0, 5).map(r => `
                 <div class="health-row">
-                  <span class="health-label mono">${this.shortId(r.cell_id)}</span>
+                  <span class="health-label mono">${this.shortId(r.cellId)}</span>
                   <span class="health-value mono">${r.hops.join(' > ')}</span>
                 </div>
               `).join('') : '<div class="empty-mini">no routes logged</div>'}
@@ -303,8 +300,8 @@ const App = {
                     <td class="mono">${this.esc(r.relay)}</td>
                     <td class="mono">${this.esc(r.ship)}</td>
                     <td>${r.weight}</td>
-                    <td><span class="status-dot ${r.has_key ? 'status-on' : 'status-off'}"></span>${r.has_key ? 'yes' : 'none'}</td>
-                    <td>${r.default_delay ? r.default_delay + 's' : '---'}</td>
+                    <td><span class="status-dot ${r.hasKey ? 'status-on' : 'status-off'}"></span>${r.hasKey ? 'yes' : 'none'}</td>
+                    <td>${r.delay ? r.delay + 's' : '---'}</td>
                     <td>${r.expiry ? this.fmtDate(r.expiry) : 'never'}</td>
                     <td>
                       <button class="btn btn-xs btn-ghost btn-danger" data-action="drop-relay" data-relay="${this.esc(r.relay)}">remove</button>
@@ -349,15 +346,15 @@ const App = {
               <tbody>
                 ${this.state.routes.map(r => `
                   <tr>
-                    <td class="mono truncate">${this.shortId(r.cell_id)}</td>
-                    <td class="mono truncate">${this.shortId(r.route_id)}</td>
-                    <td class="mono">${this.esc(r.target_ship)}/${this.esc(r.target_app)}</td>
+                    <td class="mono truncate">${this.shortId(r.cellId)}</td>
+                    <td class="mono truncate">${this.shortId(r.routeId)}</td>
+                    <td class="mono">${this.esc(r.target)}</td>
                     <td class="mono">
                       <div class="hop-chain">
                         ${r.hops.map((h, i) => `<span class="hop-node">${this.esc(h)}</span>${i < r.hops.length - 1 ? '<span class="hop-arrow">\u2192</span>' : ''}`).join('')}
                       </div>
                     </td>
-                    <td class="mono">${this.fmtDate(r.selected_at)}</td>
+                    <td class="mono">${this.fmtDate(r.selectedAt)}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -446,8 +443,8 @@ const App = {
               <tbody>
                 ${this.state.batch.map(b => `
                   <tr>
-                    <td class="mono">${this.esc(b.next_ship)}</td>
-                    <td class="mono truncate">${this.shortId(b.cell_id)}</td>
+                    <td class="mono">${this.esc(b.next)}</td>
+                    <td class="mono truncate">${this.shortId(b.cellId)}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -473,22 +470,15 @@ const App = {
 
     if (name === 'add-relay') {
       content = `
-        <h3>Add Relay Descriptor</h3>
-        <div class="form-group">
-          <label>Relay ID</label>
-          <input type="text" id="relay-id" placeholder="my-relay" autofocus>
-        </div>
+        <h3>Discover Relay</h3>
+        <p style="color:var(--dim);margin-bottom:16px;font-size:13px">Subscribe to a ship to discover its key and relay pool</p>
         <div class="form-group">
           <label>Ship</label>
-          <input type="text" id="relay-ship" placeholder="~sampel-palnet">
-        </div>
-        <div class="form-group">
-          <label>Weight</label>
-          <input type="number" id="relay-weight" value="1" min="0">
+          <input type="text" id="relay-ship" placeholder="~sampel-palnet" autofocus>
         </div>
         <div class="form-actions">
           <button class="btn" data-action="close-dialog">Cancel</button>
-          <button class="btn btn-primary" data-action="submit-add-relay">Add Relay</button>
+          <button class="btn btn-primary" data-action="submit-add-relay">Discover</button>
         </div>
       `;
     }
@@ -527,10 +517,8 @@ const App = {
             this.openDialog('add-relay');
             break;
           case 'submit-add-relay':
-            this.action(() => SkeinAPI.putRelay(
-              document.getElementById('relay-id').value,
+            this.action(() => SkeinAPI.discoverRelay(
               document.getElementById('relay-ship').value,
-              parseInt(document.getElementById('relay-weight').value) || 1,
             ));
             break;
           case 'drop-relay':

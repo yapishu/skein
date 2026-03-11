@@ -28,8 +28,8 @@ window.SkeinAPI = {
   getBatch()   { return this.get('batch'); },
 
   // writes
-  putRelay(relay, ship, weight) {
-    return this.post({ action: 'put-relay', relay, ship, weight });
+  discoverRelay(ship) {
+    return this.post({ action: 'put-relay', ship });
   },
   dropRelay(relay) {
     return this.post({ action: 'drop-relay', relay });
