@@ -10,12 +10,28 @@
 ++  discovery-period  ~m5
 ++  default-min-hops  0
 ++  cover-chance  3
+++  default-seeds  (sy ~[~sovsef-risfex-sitful-hatred])
+++  adaptive-threshold-1  3   ::  3+ relays -> min 1 hop
+++  adaptive-threshold-2  6   ::  6+ relays -> min 2 hops
+++  min-body-size  8.192      ::  pad body to 8KB minimum (bytes)
+++  min-header-size  2.048    ::  pad header to 2KB minimum (bytes)
+++  max-retries  3            ::  max first-hop delivery retries
+++  retry-base  ~s10          ::  base backoff for retries
+++  trusted-weight-boost  5   ::  weight multiplier for trusted relays
+++  cover-quiet-threshold  ~m2  ::  send extra cover if no real sends for this long
 ::
 ::  internal types
 ::
 +$  pending-forward
   $:  next=ship
       cell=relay-cell
+  ==
+::
++$  retry-entry
+  $:  cell=relay-cell
+      target=ship
+      attempts=@ud
+      next-try=@da
   ==
 ::
 +$  mix-state
@@ -30,7 +46,7 @@
   $:  %12
       next-id=@ud
       apps=(set app-id)
-      queues=(map app-id (list envelope))
+      queues=*
       relays=(map relay-id relay-descriptor)
       seen=(map @uv @da)
       recent-routes=(list route-log)
@@ -44,7 +60,7 @@
   $:  %13
       next-id=@ud
       apps=(set app-id)
-      queues=(map app-id (list envelope))
+      queues=*
       relays=(map relay-id relay-descriptor)
       seen=(map @uv @da)
       recent-routes=(list route-log)
@@ -60,7 +76,7 @@
   $:  %14
       next-id=@ud
       apps=(set app-id)
-      queues=(map app-id (list envelope))
+      queues=*
       relays=(map relay-id relay-descriptor)
       seen=(map @uv @da)
       recent-routes=(list route-log)
@@ -71,7 +87,76 @@
       min-hops=@ud
   ==
 ::
-+$  current-state  state-14
+::
+::  state-15: multiple bootstrap seeds, adaptive hops, relay health
+::
++$  state-15
+  $:  %15
+      next-id=@ud
+      apps=(set app-id)
+      queues=*
+      relays=(map relay-id relay-descriptor)
+      seen=(map @uv @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+      our-key=relay-key
+      channels=(map channel-id (map @p @da))
+      our-channels=(map channel-id app-id)
+      min-hops=@ud
+      seeds=(set @p)
+      adaptive-hops=?
+      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+  ==
+::
+::
+::  state-16: reply-token storage for reply blocks
+::
++$  state-16
+  $:  %16
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map @uv @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+      our-key=relay-key
+      channels=(map channel-id (map @p @da))
+      our-channels=(map channel-id app-id)
+      min-hops=@ud
+      seeds=(set @p)
+      adaptive-hops=?
+      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+      reply-tokens=(map @uv reply-token)  ::  cell-id -> token
+  ==
+::
+::
+::  state-17: discovery trust, reliability, cover refinement
+::
++$  state-17
+  $:  %17
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map @uv @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+      our-key=relay-key
+      channels=(map channel-id (map @p @da))
+      our-channels=(map channel-id app-id)
+      min-hops=@ud
+      seeds=(set @p)
+      adaptive-hops=?
+      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+      reply-tokens=(map @uv reply-token)
+      trusted=(set relay-id)                  ::  operator-curated trust set
+      descriptor-sources=(map relay-id ship)  ::  who told us about each relay
+      retries=(list retry-entry)              ::  failed cells awaiting retry
+      last-real-send=@da                      ::  for adaptive cover traffic
+  ==
+::
++$  current-state  state-17
 +$  card  card:agent:gall
 ::
 ::  path helpers
@@ -112,8 +197,9 @@
 ++  send-cell-card
   |=  [who=ship cell=relay-cell]
   ^-  card
-  =/  seg=@ta  (scot %uv cell-id.cell)
-  [%pass /cell/[seg] %agent [who %skein] %poke %skein-cell !>(cell)]
+  =/  cid-seg=@ta  (scot %uv cell-id.cell)
+  =/  who-seg=@ta  (scot %p who)
+  [%pass /cell/[cid-seg]/[who-seg] %agent [who %skein] %poke %skein-cell !>(cell)]
 ::
 ++  pool-fact-card
   |=  pool=(list relay-descriptor)
@@ -152,22 +238,32 @@
   (~(put in out) ship.rd)
 ::
 ++  merge-relays
-  |=  [ours=ship pool=(list relay-descriptor) relays=(map relay-id relay-descriptor)]
-  ^-  [(list relay-descriptor) (map relay-id relay-descriptor)]
-  ::  returns [new-descriptors updated-map]
-  ::  caps at max-relays, deduplicates by ship, skips self
+  |=  $:  ours=ship
+          pool=(list relay-descriptor)
+          relays=(map relay-id relay-descriptor)
+          sources=(map relay-id ship)
+          source=ship
+          now=@da
+      ==
+  ^-  [(list relay-descriptor) (map relay-id relay-descriptor) (map relay-id ship)]
+  ::  returns [new-descriptors updated-map updated-sources]
+  ::  caps at max-relays, deduplicates by ship, skips self, enforces expiry
   =/  ships=(set ship)  (known-ships relays)
   =/  new=(list relay-descriptor)  ~
   |-
-  ?~  pool  [(flop new) relays]
+  ?~  pool  [(flop new) relays sources]
   ?:  (gte ~(wyt by relays) max-relays)
-    [(flop new) relays]
+    [(flop new) relays sources]
   ?:  =(ship.i.pool ours)
+    $(pool t.pool)
+  ::  reject expired descriptors
+  ?:  ?&(?=(^ expiry.i.pool) (gth now u.expiry.i.pool))
     $(pool t.pool)
   ?:  (~(has in ships) ship.i.pool)
     $(pool t.pool)
-  =.  relays  (~(put by relays) relay.i.pool i.pool)
-  =.  ships   (~(put in ships) ship.i.pool)
+  =.  relays   (~(put by relays) relay.i.pool i.pool)
+  =.  sources  (~(put by sources) relay.i.pool source)
+  =.  ships    (~(put in ships) ship.i.pool)
   =.  new  [i.pool new]
   $(pool t.pool)
 ::
@@ -279,12 +375,45 @@
   ?.  (live-relay d now)  ~
   `d
 ::
+++  relay-score
+  |=  $:  rd=relay-descriptor
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          trusted=(set relay-id)
+      ==
+  ^-  @ud
+  =/  base=@ud  (max 1 weight.rd)
+  ::  boost trusted relays
+  =.  base  ?:((~(has in trusted) relay.rd) (mul base trusted-weight-boost) base)
+  =/  hp=(unit [success=@ud failure=@ud last-fail=(unit @da)])
+    (~(get by health) relay.rd)
+  ?~  hp  base
+  =/  total=@ud  (add success.u.hp failure.u.hp)
+  ?:  =(total 0)  base
+  (max 1 (div (mul success.u.hp base) total))
+::
+++  effective-min-hops
+  |=  [adaptive=? manual=@ud relay-count=@ud]
+  ^-  @ud
+  ?.  adaptive  manual
+  ?:  (gte relay-count adaptive-threshold-2)  2
+  ?:  (gte relay-count adaptive-threshold-1)  1
+  0
+::
 ++  shuffle-relays
-  |=  [eny=@ relays=(list relay-descriptor)]
+  |=  $:  eny=@
+          relays=(list relay-descriptor)
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          trusted=(set relay-id)
+      ==
   ^-  (list relay-descriptor)
   %+  sort  relays
   |=  [a=relay-descriptor b=relay-descriptor]
-  (lth (mug (sham [eny relay.a])) (mug (sham [eny relay.b])))
+  ::  weight-biased random: score * 1000 + random 0-999
+  =/  sa=@ud
+    (add (mul (relay-score a health trusted) 1.000) (mod (mug (sham [eny relay.a])) 1.000))
+  =/  sb=@ud
+    (add (mul (relay-score b health trusted) 1.000) (mod (mug (sham [eny relay.b])) 1.000))
+  (gth sa sb)
 ::
 ++  unique-hops
   |=  [relays=(list relay-descriptor) count=@ud exclude=(set ship)]
@@ -308,15 +437,36 @@
   `[ship.i.descriptors relay.i.descriptors key.i.descriptors default-delay.i.descriptors]
 ::
 ++  select-route
-  |=  [our=ship target=endpoint relays=(map relay-id relay-descriptor) now=@da eny=@ min-hops=@ud]
+  |=  $:  our=ship
+          target=endpoint
+          relays=(map relay-id relay-descriptor)
+          now=@da
+          eny=@
+          min-hops=@ud
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          recent=(list route-log)
+          trusted=(set relay-id)
+      ==
   ^-  (unit route)
   =/  candidates=(list relay-descriptor)
-    (shuffle-relays eny (eligible-relays our relays ship.target now))
+    (shuffle-relays eny (eligible-relays our relays ship.target now) health trusted)
   =/  final-hop=(unit route-hop)  (target-route-hop relays ship.target now)
+  ::  exclude target + ships from most recent route to same target
+  =/  prev-hops=(list ship)
+    =/  prev=(list route-log)
+      (skim recent |=(rl=route-log =(target.rl target)))
+    ?~(prev ~ hops.i.prev)
   =/  exclude=(set ship)
-    ?~  final-hop  ~
-    (sy ~[ship.target])
+    =/  base=(set ship)
+      ?~(final-hop ~ (sy ~[ship.target]))
+    (~(uni in base) (sy prev-hops))
   =/  mids=(list route-hop)  (unique-hops candidates min-hops exclude)
+  ::  fall back without route-reuse exclusion if not enough hops
+  =/  mids=(list route-hop)
+    ?:  (gte (lent mids) min-hops)  mids
+    =/  base-exclude=(set ship)
+      ?~(final-hop ~ (sy ~[ship.target]))
+    (unique-hops candidates min-hops base-exclude)
   =/  hops=(list route-hop)
     ?~  final-hop  mids
     (snoc mids u.final-hop)
@@ -339,6 +489,51 @@
   |=  routes=(list route-log)
   ^-  (list route-log)
   (scag max-routes routes)
+::
+::  pad atom to at least min-size bytes by adding high bytes
+::  cue will ignore the high-byte padding when decoding jammed data
+::
+++  pad-atom
+  |=  [data=@ min-size=@ud eny=@]
+  ^-  @
+  =/  current=@ud  (met 3 data)
+  ?:  (gte current min-size)  data
+  =/  pad-size=@ud  (sub min-size current)
+  =/  padding=@  (end [3 pad-size] (shaz (mix eny data)))
+  ::  ensure padding has at least one nonzero high byte
+  =/  padding=@  ?:(=(0 padding) 1 padding)
+  (add data (lsh [3 current] padding))
+::
+::  build reply block: a pre-built encrypted route back to us
+::
+++  build-reply-block
+  |=  $:  our=ship
+          relays=(map relay-id relay-descriptor)
+          our-key=relay-key
+          now=@da
+          eny=@
+          min-hops=@ud
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          recent=(list route-log)
+          trusted=(set relay-id)
+      ==
+  ^-  (unit [=reply-block token=reply-token])
+  ::  select intermediate hops (route ending at us)
+  =/  candidates=(list relay-descriptor)
+    (shuffle-relays eny (eligible-relays our relays our now) health trusted)
+  =/  mids=(list route-hop)  (unique-hops candidates min-hops ~)
+  ::  add self as final destination hop
+  =/  self-hop=route-hop  [our (scot %p our) our-key ~]
+  =/  hops=(list route-hop)  (snoc mids self-hop)
+  ?~  hops  ~
+  ::  generate reply token and derive body key
+  =/  token=reply-token  `@ux`(shaz (jam [%reply-token eny now]))
+  =/  body-key=relay-key  `@ux`(shaz (jam [%reply-body token]))
+  ::  build onion headers for the return route
+  =/  cid=@uv  (sham [%reply-block eny now])
+  =/  header=header-box  (build-header hops cid body-key)
+  =/  first=ship  ship.i.hops
+  `[[token cid first header (some (add now ~d1))] token]
 ::
 ::  crypto helpers
 ::
@@ -391,9 +586,11 @@
 ::  payload helpers
 ::
 ++  seal-body
-  |=  [body-key=relay-key env=envelope]
+  |=  [body-key=relay-key env=envelope eny=@]
   ^-  payload-box
-  (box-noun body-key [id.env origin.env target.env sent-at.env payload.env opts.env])
+  =/  jammed=@  (jam [id.env origin.env target.env sent-at.env payload.env opts.env])
+  =/  padded=@  (pad-atom jammed min-body-size eny)
+  (box-atom body-key padded)
 ::
 ++  open-body
   |=  [body-key=relay-key box=payload-box]
@@ -459,8 +656,14 @@
     ~&  [%skein-deliver %target-not-bound app.target.env]
     :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'target-not-bound'])]~
     queues
-  =/  new-queues  (put-queue app.target.env env queues)
   =/  cid=@uv  (cell-id-for id.env origin.env target.env sent-at.env)
+  ::  cover traffic: absorb silently, don't poke external agent
+  ?:  =(app.target.env %cover)
+    :-  :~  (relay-card [%delivered cid %cover])
+            (message-card env)
+        ==
+    queues
+  =/  new-queues  (put-queue app.target.env env queues)
   :-  :~  (relay-card [%delivered cid app.target.env])
           (message-card env)
           [%pass /deliver %agent [our app.target.env] %poke %noun !>(payload.env)]
@@ -547,6 +750,12 @@
           channels=(map channel-id (map @p @da))
           our-channels=(map channel-id app-id)
           min-hops=@ud
+          seeds=(set @p)
+          adaptive-hops=?
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          reply-tokens=(map @uv reply-token)
+          trusted=(set relay-id)
+          retries=(list retry-entry)
       ==
   ^-  json
   %-  pairs:enjs:format
@@ -560,6 +769,13 @@
       ['channels' (numb:enjs:format ~(wyt by channels))]
       ['ourChannels' (numb:enjs:format ~(wyt by our-channels))]
       ['minHops' (numb:enjs:format min-hops)]
+      ['effectiveMinHops' (numb:enjs:format (effective-min-hops adaptive-hops min-hops ~(wyt by relays)))]
+      ['seeds' (numb:enjs:format ~(wyt in seeds))]
+      ['adaptiveHops' b+adaptive-hops]
+      ['healthyRelays' (numb:enjs:format ~(wyt by health))]
+      ['replyTokens' (numb:enjs:format ~(wyt by reply-tokens))]
+      ['trustedRelays' (numb:enjs:format ~(wyt in trusted))]
+      ['pendingRetries' (numb:enjs:format (lent retries))]
   ==
 ::
 ++  relays-json
@@ -634,6 +850,26 @@
         ['app' s+app]
     ==
   ==
+::
+++  health-json
+  |=  health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+  ^-  json
+  :-  %a
+  %+  turn  ~(tap by health)
+  |=  [rid=relay-id h=[success=@ud failure=@ud last-fail=(unit @da)]]
+  %-  pairs:enjs:format
+  :~  ['relay' s+rid]
+      ['success' (numb:enjs:format success.h)]
+      ['failure' (numb:enjs:format failure.h)]
+      :-  'lastFail'
+      ?~  last-fail.h  ~
+      (numb:enjs:format (div (sub u.last-fail.h ~1970.1.1) ~s1))
+  ==
+::
+++  trusted-json
+  |=  trusted=(set relay-id)
+  ^-  json
+  a+(turn ~(tap in trusted) |=(rid=relay-id s+rid))
 ::
 ++  index-html
   ^-  @t
@@ -741,13 +977,21 @@
   =.  seen.state     ~
   =.  recent-routes.state  ~
   =.  mix.state      [~ ~]
+  =.  seeds.state    default-seeds
+  =.  adaptive-hops.state  %.y
+  =.  health.state   ~
+  =.  reply-tokens.state  ~
+  =.  trusted.state  ~
+  =.  descriptor-sources.state  ~
+  =.  retries.state  ~
+  =.  last-real-send.state  now.bowl
   =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-  ::  bootstrap: subscribe to default relay to discover network
-  =/  default-ship=ship  ~sovsef-risfex-sitful-hatred
+  ::  bootstrap: subscribe to seed relays to discover network
   =/  boot-cards=(list card)
-    ?:  =(default-ship our.bowl)  ~
-    :~  [%pass /relay/sub/(scot %p default-ship) %agent [default-ship %skein] %watch /relay/pool]
-    ==
+    %+  murn  ~(tap in seeds.state)
+    |=  s=ship
+    ?:  =(s our.bowl)  ~
+    `[%pass /relay/sub/(scot %p s) %agent [s %skein] %watch /relay/pool]
   =/  sub-cards=(list card)  (discovery-sub-cards our.bowl relays.state wex.bowl)
   :_  this
   ;:  weld
@@ -768,14 +1012,14 @@
   |=  old=vase
   ^-  (quip card _this)
   |^
-  ?:  =(-.q.old 14)
-    =/  saved  !<(state-14 old)
+  ?:  =(-.q.old 17)
+    =/  saved  !<(state-17 old)
     =.  state  saved
     finish
-  ?:  =(-.q.old 13)
-    =/  saved  !<(state-13 old)
+  ?:  =(-.q.old 16)
+    =/  saved  !<(state-16 old)
     =.  state
-      :*  %14
+      :*  %17
           next-id.saved
           apps.saved
           queues.saved
@@ -786,16 +1030,99 @@
           our-key.saved
           channels.saved
           our-channels.saved
+          min-hops.saved
+          seeds.saved
+          adaptive-hops.saved
+          health.saved
+          reply-tokens.saved
+          ~    ::  trusted
+          ~    ::  descriptor-sources
+          ~    ::  retries
+          now.bowl  ::  last-real-send
+      ==
+    finish
+  ?:  =(-.q.old 15)
+    =/  saved  !<(state-15 old)
+    =.  state
+      :*  %17
+          next-id.saved
+          apps.saved
+          ~              ::  queues cleared (reply-block type changed)
+          relays.saved
+          seen.saved
+          recent-routes.saved
+          mix.saved
+          our-key.saved
+          channels.saved
+          our-channels.saved
+          min-hops.saved
+          seeds.saved
+          adaptive-hops.saved
+          health.saved
+          ~    ::  reply-tokens
+          ~    ::  trusted
+          ~    ::  descriptor-sources
+          ~    ::  retries
+          now.bowl  ::  last-real-send
+      ==
+    finish
+  ?:  =(-.q.old 14)
+    =/  saved  !<(state-14 old)
+    =.  state
+      :*  %17
+          next-id.saved
+          apps.saved
+          ~              ::  queues cleared (reply-block type changed)
+          relays.saved
+          seen.saved
+          recent-routes.saved
+          mix.saved
+          our-key.saved
+          channels.saved
+          our-channels.saved
+          min-hops.saved
+          default-seeds
+          %.y
+          ~    ::  health
+          ~    ::  reply-tokens
+          ~    ::  trusted
+          ~    ::  descriptor-sources
+          ~    ::  retries
+          now.bowl  ::  last-real-send
+      ==
+    finish
+  ?:  =(-.q.old 13)
+    =/  saved  !<(state-13 old)
+    =.  state
+      :*  %17
+          next-id.saved
+          apps.saved
+          ~              ::  queues cleared (reply-block type changed)
+          relays.saved
+          seen.saved
+          recent-routes.saved
+          mix.saved
+          our-key.saved
+          channels.saved
+          our-channels.saved
           default-min-hops
+          default-seeds
+          %.y
+          ~    ::  health
+          ~    ::  reply-tokens
+          ~    ::  trusted
+          ~    ::  descriptor-sources
+          ~    ::  retries
+          now.bowl  ::  last-real-send
       ==
     finish
   ?:  =(-.q.old 12)
     =/  saved  !<(state-12 old)
     =.  state
-      :*  %14
+      :*  %17
           next-id.saved
           apps.saved
-          queues.saved
+          ~              ::  queues cleared (reply-block type changed)
           relays.saved
           seen.saved
           recent-routes.saved
@@ -804,11 +1131,19 @@
           ~    ::  channels
           ~    ::  our-channels
           default-min-hops
+          default-seeds
+          %.y
+          ~    ::  health
+          ~    ::  reply-tokens
+          ~    ::  trusted
+          ~    ::  descriptor-sources
+          ~    ::  retries
+          now.bowl  ::  last-real-send
       ==
     finish
   ::  incompatible older state — fresh start
   =/  new-key=relay-key  (shaz (jam [%skein-relay-key our.bowl eny.bowl now.bowl]))
-  =.  state  [%14 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] new-key ~ ~ default-min-hops]
+  =.  state  [%17 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] new-key ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ ~ now.bowl]
   finish
   ::
   ++  finish
@@ -816,14 +1151,16 @@
     ::  remove self from relays if present
     =.  relays.state  (~(del by relays.state) (scot %p our.bowl))
     =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    ::  bootstrap: subscribe to default relay to discover network
-    =/  default-ship=ship  ~sovsef-risfex-sitful-hatred
+    ::  ensure seeds are populated (may be empty from migration)
+    =?  seeds.state  =(~ seeds.state)  default-seeds
+    ::  bootstrap: subscribe to seed relays to discover network
     =/  boot-cards=(list card)
-      ?:  =(default-ship our.bowl)  ~
-      =/  seg=@ta  (scot %p default-ship)
-      ?:  (~(has by wex.bowl) [/relay/sub/[seg] default-ship %skein])  ~
-      :~  [%pass /relay/sub/[seg] %agent [default-ship %skein] %watch /relay/pool]
-      ==
+      %+  murn  ~(tap in seeds.state)
+      |=  s=ship
+      ?:  =(s our.bowl)  ~
+      =/  seg=@ta  (scot %p s)
+      ?:  (~(has by wex.bowl) [/relay/sub/[seg] s %skein])  ~
+      `[%pass /relay/sub/[seg] %agent [s %skein] %watch /relay/pool]
     =/  sub-cards=(list card)  (discovery-sub-cards our.bowl relays.state wex.bowl)
     ::  re-subscribe to channels on known relays
     =/  channel-cards=(list card)
@@ -871,9 +1208,13 @@
     ?.  (~(has in apps.state) from.req)
       ~&  [%skein-send %app-not-bound from.req]
       `this
+    =/  eff-hops=@ud
+      (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
     =/  resolved-route=(unit route)
       ?~  route.opts.req
-        ?:(=(ship.to.req our.bowl) ~ (select-route our.bowl to.req relays.state now.bowl eny.bowl min-hops.state))
+        ?.  =(ship.to.req our.bowl)
+          (select-route our.bowl to.req relays.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+        ~
       `(hydrate-route u.route.opts.req relays.state)
     =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req]
     =/  env=envelope
@@ -893,13 +1234,13 @@
     =/  actual-hops=@ud  (lent hops.u.resolved-route)
     =/  intermediate=@ud  ?:(=(actual-hops 0) 0 (dec actual-hops))
     ~&  [%skein-send %routing from.req (scot %p ship.to.req) %via actual-hops %hops]
-    ~?  (lth intermediate min-hops.state)  [%skein-send %degraded-route %wanted min-hops.state %got intermediate]
+    ~?  (lth intermediate eff-hops)  [%skein-send %degraded-route %wanted eff-hops %got intermediate]
     ?~  full-route
       :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'no-route'])]~
       this
     =/  cell-id=@uv  (cell-id-for id.env origin.env target.env sent-at.env)
     =/  body-key=relay-key  (shaz (jam [%skein-body eny.bowl cell-id]))
-    =/  body=payload-box  (seal-body body-key env)
+    =/  body=payload-box  (seal-body body-key env eny.bowl)
     =/  header=header-box
       (build-header hops.u.resolved-route cell-id body-key)
     =/  cell=relay-cell
@@ -907,6 +1248,8 @@
     =/  selected=route-log
       [cell-id route-id.u.resolved-route to.req (route-ships to.req resolved-opts) now.bowl]
     =.  recent-routes.state  (trim-routes [selected recent-routes.state])
+    ::  track real sends for adaptive cover traffic
+    =?  last-real-send.state  !=(from.req %cover)  now.bowl
     =/  first-hop=(unit route-hop)  (route-head hops.u.resolved-route)
     =/  first-delay=(unit @dr)
       ?~  first-hop  ~
@@ -949,6 +1292,8 @@
         [(weld base [(relay-card [%dropped cell-id.cell 'body-unopenable'])]~) this]
       ?.  =(ship.target.u.env our.bowl)
         [(weld base [(relay-card [%dropped cell-id.cell 'wrong-target'])]~) this]
+      ::  clean up reply-token if this was a reply cell
+      =.  reply-tokens.state  (~(del by reply-tokens.state) cell-id.cell)
       =^  cards  queues.state
         (deliver-envelope our.bowl u.env apps.state queues.state)
       [(weld base cards) this]
@@ -992,7 +1337,7 @@
     ::
         [%stats ~]
       :_  this
-      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state))
+      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state reply-tokens.state trusted.state retries.state))
     ::
         [%relays ~]
       :_  this
@@ -1013,6 +1358,14 @@
         [%channels ~]
       :_  this
       (give-json-response eyre-id (channels-json channels.state our-channels.state))
+    ::
+        [%health ~]
+      :_  this
+      (give-json-response eyre-id (health-json health.state))
+    ::
+        [%trusted ~]
+      :_  this
+      (give-json-response eyre-id (trusted-json trusted.state))
     ==
   ::
   ++  handle-post
@@ -1085,6 +1438,34 @@
       =/  n=@ud
         ((ot:dejs:format ~[['n' ni:dejs:format]]) jon)
       `[%set-min-hops n]
+    ::
+        %'add-seed'
+      =/  ship=@p
+        ((ot:dejs:format ~[['ship' (se:dejs:format %p)]]) jon)
+      `[%add-seed ship]
+    ::
+        %'drop-seed'
+      =/  ship=@p
+        ((ot:dejs:format ~[['ship' (se:dejs:format %p)]]) jon)
+      `[%drop-seed ship]
+    ::
+        %'set-adaptive-hops'
+      =/  on=?
+        ((ot:dejs:format ~[['on' bo:dejs:format]]) jon)
+      `[%set-adaptive-hops on]
+    ::
+        %'build-reply-block'
+      `[%build-reply-block ~]
+    ::
+        %'trust-relay'
+      =/  relay=relay-id
+        ((ot:dejs:format ~[['relay' so:dejs:format]]) jon)
+      `[%trust-relay relay]
+    ::
+        %'untrust-relay'
+      =/  relay=relay-id
+        ((ot:dejs:format ~[['relay' so:dejs:format]]) jon)
+      `[%untrust-relay relay]
     ==
   ::
   ++  exec-admin-action
@@ -1168,6 +1549,56 @@
       =.  min-hops.state  n.act
       ~&  [%skein %min-hops-set n.act]
       `this
+    ::
+        %add-seed
+      =.  seeds.state  (~(put in seeds.state) ship.act)
+      ::  try subscribing to the new seed
+      =/  sub-cards=(list card)
+        ?:  =(ship.act our.bowl)  ~
+        ?:  (~(has in (known-ships relays.state)) ship.act)  ~
+        =/  seg=@ta  (scot %p ship.act)
+        ?:  (~(has by wex.bowl) [/relay/sub/[seg] ship.act %skein])  ~
+        :~  [%pass /relay/sub/[seg] %agent [ship.act %skein] %watch /relay/pool]
+        ==
+      ~&  [%skein %seed-added ship.act]
+      :_  this
+      [(relay-card [%seed-added ship.act]) sub-cards]
+    ::
+        %drop-seed
+      =.  seeds.state  (~(del in seeds.state) ship.act)
+      ~&  [%skein %seed-removed ship.act]
+      :-  [(relay-card [%seed-removed ship.act])]~
+      this
+    ::
+        %set-adaptive-hops
+      =.  adaptive-hops.state  on.act
+      ~&  [%skein %adaptive-hops-set on.act]
+      `this
+    ::
+        %build-reply-block
+      =/  eff-hops=@ud
+        (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
+      =/  result
+        (build-reply-block our.bowl relays.state our-key.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+      ?~  result
+        ~&  [%skein %reply-block-build-failed %insufficient-relays]
+        `this
+      =.  reply-tokens.state  (~(put by reply-tokens.state) cell-id.reply-block.u.result token.u.result)
+      ~&  [%skein %reply-block-built cell-id.reply-block.u.result]
+      :-  [(relay-card [%reply-block-built reply-block.u.result])]~
+      this
+    ::
+        %trust-relay
+      =.  trusted.state  (~(put in trusted.state) relay.act)
+      ~&  [%skein %relay-trusted relay.act]
+      :-  [(relay-card [%relay-trusted relay.act])]~
+      this
+    ::
+        %untrust-relay
+      =.  trusted.state  (~(del in trusted.state) relay.act)
+      ~&  [%skein %relay-untrusted relay.act]
+      :-  [(relay-card [%relay-untrusted relay.act])]~
+      this
     ==
   --
 ::
@@ -1198,6 +1629,24 @@
           has-timer=?=(^ timer.mix.state)
       ==
     ``noun+!>(s)
+  ::
+      [%x %reply-block ~]
+    ::  build a fresh reply block (informational; use %build-reply-block poke for tracked blocks)
+    =/  eff-hops=@ud
+      (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
+    =/  result
+      (build-reply-block our.bowl relays.state our-key.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+    ?~  result  [~ ~]
+    ``noun+!>(reply-block.u.result)
+  ::
+      [%x %health ~]
+    ``noun+!>(health.state)
+  ::
+      [%x %trusted ~]
+    ``noun+!>(trusted.state)
+  ::
+      [%x %seeds ~]
+    ``noun+!>(seeds.state)
   ==
 ::
 ++  on-watch
@@ -1275,11 +1724,13 @@
         %fact
       ?.  =(%skein-relay-pool p.cage.sign)  `this
       =/  pool=(list relay-descriptor)  !<((list relay-descriptor) q.cage.sign)
-      =/  [new-rds=(list relay-descriptor) new-relays=(map relay-id relay-descriptor)]
-        (merge-relays our.bowl pool relays.state)
+      =/  source=ship  (slav %p i.t.t.wire)
+      =/  [new-rds=(list relay-descriptor) new-relays=(map relay-id relay-descriptor) new-sources=(map relay-id ship)]
+        (merge-relays our.bowl pool relays.state descriptor-sources.state source now.bowl)
       ?~  new-rds  `this
       ::  we learned new relays -- update state, notify subscribers, subscribe to new ones
       =.  relays.state  new-relays
+      =.  descriptor-sources.state  new-sources
       =/  new-sub-cards=(list card)
         %+  murn  new-rds
         |=  rd=relay-descriptor
@@ -1350,6 +1801,26 @@
       ((slog u.p.sign) `this)
     ==
   ::
+      [%cell @ @ ~]
+    ::  track relay health from cell delivery acks
+    =/  who-seg=@ta  i.t.t.wire
+    =/  relay-ship=ship  (slav %p who-seg)
+    ?+  -.sign  `this
+        %poke-ack
+      =/  rid=relay-id  (scot %p relay-ship)
+      =/  cur=[success=@ud failure=@ud last-fail=(unit @da)]
+        (~(gut by health.state) rid [0 0 ~])
+      =.  health.state
+        ?~  p.sign
+          (~(put by health.state) rid [+(success.cur) failure.cur last-fail.cur])
+        (~(put by health.state) rid [success.cur +(failure.cur) `now.bowl])
+      `this
+    ==
+  ::
+      [%cell @ ~]
+    ::  legacy cell ack (pre-state-15 wire format), ignore
+    `this
+  ::
       [%deliver *]
     `this
   ::
@@ -1373,33 +1844,74 @@
     ::  flush pending batch
     =/  flush-cards=(list card)  (flush-batch batch.mix.state now.bowl)
     =.  mix.state  [~ ~]
-    ::  maybe generate cover traffic
+    ::  prune expired relay descriptors
+    =/  expired-rids=(list relay-id)
+      %+  murn  (relays-list relays.state)
+      |=  rd=relay-descriptor
+      ?~  expiry.rd  ~
+      ?.  (gth now.bowl u.expiry.rd)  ~
+      `relay.rd
+    =/  prune-cards=(list card)
+      (turn expired-rids |=(rid=relay-id (relay-card [%relay-expired rid])))
+    =.  relays.state
+      =/  rr  relays.state
+      =/  rids  expired-rids
+      |-
+      ?~  rids  rr
+      $(rids t.rids, rr (~(del by rr) i.rids))
+    =.  descriptor-sources.state
+      =/  ss  descriptor-sources.state
+      =/  rids  expired-rids
+      |-
+      ?~  rids  ss
+      $(rids t.rids, ss (~(del by ss) i.rids))
+    ::  process retry queue
+    =/  due=(list retry-entry)
+      (skim retries.state |=(re=retry-entry (lte next-try.re now.bowl)))
+    =/  not-due=(list retry-entry)
+      (skip retries.state |=(re=retry-entry (lte next-try.re now.bowl)))
+    =/  retry-cards=(list card)
+      %+  turn  due
+      |=  re=retry-entry
+      (send-cell-card target.re cell.re)
+    ::  re-queue with incremented attempts, drop maxed-out entries
+    =/  requeued=(list retry-entry)
+      %+  murn  due
+      |=  re=retry-entry
+      ?:  (gte +(attempts.re) max-retries)  ~
+      =/  backoff=@dr  (mul retry-base (bex attempts.re))
+      `[cell.re target.re +(attempts.re) (add now.bowl backoff)]
+    =.  retries.state  (weld requeued not-due)
+    ::  adaptive cover traffic: increase when quiet
+    =/  quiet=?  (gth (sub now.bowl last-real-send.state) cover-quiet-threshold)
     =/  cover-cards=(list card)
-      ?.  ?&  (gth ~(wyt by relays.state) 1)
-              (lth (mod (mug eny.bowl) cover-chance) 1)
-          ==
+      ?.  (gth ~(wyt by relays.state) 1)
+        ~
+      ::  higher cover chance when quiet, normal chance otherwise
+      =/  chance=@ud  ?:(quiet 1 cover-chance)
+      ?.  (lth (mod (mug eny.bowl) chance) 1)
         ~
       =/  cc  (cover-send-card our.bowl eny.bowl relays.state)
       ?~(cc ~ [u.cc]~)
     ::  re-attempt bootstrap if we have no relays and no pending sub
     =/  bootstrap-cards=(list card)
       ?.  =(~ relays.state)  ~
-      =/  default-ship=ship  ~sovsef-risfex-sitful-hatred
-      ?:  =(default-ship our.bowl)  ~
-      =/  seg=@ta  (scot %p default-ship)
-      ?:  (~(has by wex.bowl) [/relay/sub/[seg] default-ship %skein])  ~
-      :~  [%pass /relay/sub/[seg] %agent [default-ship %skein] %watch /relay/pool]
-      ==
+      %+  murn  ~(tap in seeds.state)
+      |=  s=ship
+      ?:  =(s our.bowl)  ~
+      =/  seg=@ta  (scot %p s)
+      ?:  (~(has by wex.bowl) [/relay/sub/[seg] s %skein])  ~
+      `[%pass /relay/sub/[seg] %agent [s %skein] %watch /relay/pool]
     ::  re-arm epoch timer
     =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
-    [(zing ~[flush-cards cover-cards bootstrap-cards timer-cards]) this]
+    [(zing ~[flush-cards prune-cards retry-cards cover-cards bootstrap-cards timer-cards]) this]
   ::
       [%delay *]
     ::  legacy timer from state-2, discard
     [~ this]
   ::
       [%cell *]
-    ::  ack from poke delivery, ignore
+    ::  arvo sign on cell wire (behn timer etc), ignore
     [~ this]
   ::
       [%cover ~]
