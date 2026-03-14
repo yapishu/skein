@@ -1,117 +1,191 @@
-# Skein Plan
+# Skein Design Plan
 
-This plan is based on the current `%skein` code, not the older aspirational security story.
+This plan is based on the `%skein` code that exists now. The goal is not to replace the current transport with a different system. The goal is to harden the current design by extending the pieces that are already live:
 
-## North Star
+- signed relay descriptors
+- route health and trust scoring
+- opaque contact bundles and reply blocks
+- per-hop body peeling and per-hop `cell-id` reassignment
+- retry, batching, and lightweight cover traffic
 
-- Useful routed transport for higher-level apps like `%silk`
-- Real confidentiality of payloads and remaining route against curious relays
-- Better unlinkability across hops
-- Better discovery trust and lower eclipse / Sybil risk
-- Clear documentation of what `%skein` does and does not protect
+## Design direction
 
-## Priority 0: Stop Publishing Relay Decryption Keys
+The current `%skein` is already a usable routed transport. The next version should keep the same mental model and improve three things:
 
-- Remove symmetric relay decryption keys from relay descriptors
-- Replace them with public descriptor material suitable for per-hop header sealing
-- Make sure a relay can open only its own layer, not every downstream layer
-- Revisit final-hop body-key delivery so a curious intermediate relay cannot recover it from the remaining header
-- Add a real authenticity story so routed envelopes cannot simply claim an arbitrary `origin`
+1. joining the network from one known peer without giving that peer total control over the visible relay set
+2. reducing linkability from repeated contact use, timing, and size
+3. making route failure cause delay and reroute, not application-visible collapse
 
-Done when:
+## Workstream 1: turn descriptor provenance into routing policy
 
-- a relay pool subscriber cannot decrypt arbitrary cells just from the descriptor set
-- a single curious relay on a path no longer defeats remaining-route secrecy by design
+Current code already tracks descriptor sources and verifies descriptor signatures. The next change should make provenance affect route eligibility instead of being passive metadata.
 
-## Priority 1: Remove Cross-Hop Linkability
+### Design change
 
-- Stop forwarding stable cells with the same clear `cell-id`
-- Re-randomize or re-encapsulate on every hop instead of just peeling a header
-- Avoid forwarding the encrypted body byte-for-byte unchanged
-- Revisit replay detection so it still works without a globally stable visible id
+Add local relay metadata beside each descriptor:
 
-Done when:
+- `sources=(set ship)`
+- `first-seen=@da`
+- `last-seen=@da`
+- `status=?(%provisional %usable %trusted)`
+- `family=(unit @t)`
 
-- downstream observers cannot trivially correlate the same packet by id or unchanged ciphertext
-- tagging resistance is stronger than the current baseline
+Use the current `descriptor-sources.state`, `trusted.state`, and `health.state` as the base for this local relay view.
 
-## Priority 2: Strengthen Discovery And Seed Posture
+### Routing rule
 
-- Add signed relay descriptors
-- Validate descriptors from more than one source
-- Reduce dependence on a single default seed
-- Make eclipse and Sybil attacks harder than "be the first pool source"
-- Tighten expiry and freshness handling
+- a relay learned from only one source starts as `%provisional`
+- `%provisional` relays may be used for discovery expansion and first-hop fallback, but not as preferred middle hops
+- a relay becomes `%usable` after cross-witnessing from multiple sources or explicit operator trust
+- `%trusted` remains the manual override that already exists
 
-Done when:
+### Why this fits the current design
 
-- discovery is not blind trust in whoever answered `/relay/pool`
-- a malicious seed or early peer has less power to define the visible network
+- descriptor signature verification already prevents trivial forgery
+- source tracking already exists
+- route selection already has health and trust weighting
 
-## Priority 3: Finish Reply Blocks
+This work mostly changes route admission rules, not the cell format.
 
-- Wire reply blocks into the live send path
-- Decide reply-block lifecycle:
-  - single-use
-  - short-lived
-  - failure behavior
-- Make replies usable by higher-level apps without exposing sender transport identity directly
+### Migration steps
 
-Done when:
+1. Change `descriptor-sources` from a single source to a source set.
+2. Build a `relay-meta` map from the current discovery flow.
+3. Filter route candidates by local status before score sorting.
+4. Surface status and source count on `/x/descriptors` and the HTTP stats view.
 
-- recipients can reply without a direct sender route
-- reply blocks are more than a stored token and a debug builder
+## Workstream 2: evolve contact bundles into introduction bundles
 
-## Priority 4: Improve Size Hiding
+Current contact bundles already hide the destination ship from the caller. The next problem is reuse and linkability.
 
-- Keep minimum body padding
-- Add header padding
-- Decide fixed-size cells or a small set of cell profiles
-- Test body / header size leakage under normal app traffic
+### Design change
 
-Done when:
+Keep the current `contact-v2` idea, but make a minted contact represent a small batch of single-use ingress tokens rather than one long-lived reusable ingress path.
 
-- cell size leaks materially less application information
-- route length and small payload size are less obvious
+A next-step contact bundle should carry:
 
-## Priority 5: Revisit Channel Privacy
+- target app
+- bundle id
+- a small batch of ingress entries
+- per-entry expiry
+- optional reply policy hints
 
-- Decide whether channels are meant to be explicit membership directories
-- If yes, document that clearly and keep them out of anonymity claims
-- If no, design a different peer-discovery mechanism for privacy-sensitive apps
+Each ingress entry should be consumable once. A delivered message should carry fresh reply material so the conversation continues on newly issued ingress entries instead of the original introduction bundle.
 
-Done when:
+### Why this fits the current design
 
-- `%silk` and other apps are not accidentally relying on channels for private discovery
-- channel privacy properties are explicit rather than implied
+- `%skein` already knows how to mint contacts
+- reply blocks are already live
+- `%silk` already rotates and republishes contact material
 
-## Priority 6: Keep Reliability And Cover Useful
+This is an extension of the current contact and reply-block machinery, not a new addressing system.
 
-- Keep retry bounded and predictable
-- Improve observability around batch queues and retry queues
-- Tune cover traffic beyond a simple chance-based policy
-- Make cover paths and timing less mechanically distinct from real traffic
+### Migration steps
 
-Done when:
+1. Keep current `contact-v2` support as a compatibility path.
+2. Add local bookkeeping for consumed ingress tokens.
+3. Mint contacts as short batches instead of single reusable paths.
+4. Reissue fresh reply material automatically on delivery helpers.
 
-- ordinary relay churn causes delay rather than collapse
-- cover traffic helps against quiet-period leakage without becoming noisy nonsense
+## Workstream 3: add fixed transport profiles on top of the existing cell format
 
-## Testing Plan
+The current transport already does onion wrapping and hop-local forwarding. The missing piece is disciplined size shaping.
 
-- Add tests that model a curious relay with access to the relay pool
-- Add forwarding-correlation tests for stable `cell-id` and unchanged body bytes
-- Add discovery tests for malicious pool injection and seed bias
-- Add reply-block integration tests
-- Add channel-membership privacy tests or explicit documentation tests
-- Keep the existing crypto round-trip tests, but stop treating them as security coverage
+### Design change
 
-## Suggested Execution Order
+Add a small set of `cell-profile`s, for example:
 
-1. Stop publishing relay decryption keys
-2. Remove cross-hop linkability and add re-encapsulation
-3. Strengthen discovery trust and seed posture
-4. Wire reply blocks into the live transport path
-5. Add header padding and better size hiding
-6. Revisit channel privacy semantics
-7. Tune reliability and cover traffic
+- `%small`
+- `%medium`
+- `%large`
+
+Each profile defines:
+
+- padded body size
+- padded header size
+- delay window defaults
+- cover eligibility
+
+Use the existing padding helper and current relay-cell construction, but pad before sealing and standardize the output to the chosen profile.
+
+### Why this fits the current design
+
+- the current `relay-cell` format can absorb a profile field without changing the routing model
+- padding support already exists in code
+- mix epochs and delays already exist
+
+### Migration steps
+
+1. Add `profile` to `relay-cell` and send options.
+2. Pad header and body to the selected profile before encryption.
+3. Choose a profile automatically from payload size unless the caller overrides it.
+4. Update cover traffic to use the same profiles as real traffic.
+
+## Workstream 4: make resilience route-set based instead of single-route based
+
+Current `%skein` chooses a route per send and retries first-hop failure. That is enough for MVP transport, but not enough for the reliability target.
+
+### Design change
+
+Keep the current route selector, but have it return a small route set:
+
+- one primary route
+- one or two alternates with different entry relays and, when possible, different relay families
+
+Send uses the primary route first. Retry promotes an alternate route instead of recomputing from scratch every time.
+
+### Why this fits the current design
+
+- route selection is already local
+- health and trust already influence route choice
+- retry queues already exist
+
+This change mostly affects send bookkeeping and retry behavior.
+
+### Migration steps
+
+1. Extend recent-route tracking from one route to a route-set view.
+2. Store alternate first hops for pending sends.
+3. Promote alternates on retry before falling back to a fresh selection.
+4. Persist healthy relay observations across restart so a reboot does not reset route quality to zero.
+
+## Workstream 5: keep channels public and add a private introduction path for apps that need it
+
+Channels are useful coordination primitives. They are also public directories.
+
+### Design change
+
+Do not try to make channels private. Keep them as explicit membership surfaces.
+
+For privacy-sensitive apps, add a separate introduction flow built on the contact-bundle work above:
+
+- an app publishes introduction material
+- peers exchange opaque contacts through explicit introductions
+- no privacy-sensitive app relies on channel membership as a participant directory
+
+### Why this fits the current design
+
+- channel support already works and should stay simple
+- `%silk` has already started moving away from channel-based discovery
+
+## Workstream 6: add real integration coverage
+
+The current test desk covers helper behavior. The next phase needs protocol tests.
+
+### Test additions
+
+- descriptor merge tests with mixed good and bad signatures
+- route admission tests for `%provisional` versus `%usable` relays
+- contact-bundle consumption and reply reissue tests
+- multi-hop forwarding tests with per-hop `cell-id` changes
+- fixed-profile padding tests
+- relay failure and retry-to-alternate-route tests
+
+## Suggested execution order
+
+1. Provenance-aware relay admission
+2. Introduction bundles built from the current contact system
+3. Fixed-size transport profiles
+4. Route-set retries and persisted relay quality
+5. Private introductions for apps that need them, while keeping channels explicitly public
+6. Integration tests for all of the above

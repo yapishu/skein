@@ -163,7 +163,7 @@
       next-id=@ud
       apps=(set app-id)
       queues=(map app-id (list envelope))
-      relays=(map relay-id relay-descriptor)
+      relays=*                                ::  opaque — cleared on upgrade
       seen=(map @uv @da)
       recent-routes=(list route-log)
       mix=mix-state
@@ -186,7 +186,7 @@
       next-id=@ud
       apps=(set app-id)
       queues=(map app-id (list envelope))
-      relays=(map relay-id relay-descriptor)
+      relays=*                                ::  opaque — cleared on upgrade (type changed)
       seen=(map @uv @da)
       recent-routes=(list route-log)
       mix=mix-state
@@ -202,10 +202,35 @@
       descriptor-sources=(map relay-id ship)
       retries=(list retry-entry)
       last-real-send=@da
-      minted-contacts=(map app-id @ux)
+      minted-contacts=*                       ::  opaque — cleared on upgrade (type changed)
   ==
 ::
-+$  current-state  state-19
+::
++$  state-20
+  $:  %20
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map @uv @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+      our-seed=@ux
+      our-pub=@ux
+      channels=(map channel-id (map @p @da))
+      our-channels=(map channel-id app-id)
+      min-hops=@ud
+      seeds=(set @p)
+      adaptive-hops=?
+      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+      trusted=(set relay-id)
+      descriptor-sources=(map relay-id ship)
+      retries=(list retry-entry)
+      last-real-send=@da
+      minted-contacts=(map @uv @ux)   ::  Fix 2: keyed by label, not app-id
+  ==
+::
++$  current-state  state-20
 +$  card  card:agent:gall
 ::
 ::  path helpers
@@ -274,10 +299,12 @@
   [%pass /channel/sub/[seg]/[cid] %agent [relay-ship %skein] %leave ~]
 ::
 ++  self-descriptor
-  |=  [our=ship our-pub=@ux]
+  |=  [our=ship our-pub=@ux our-seed=@ux]
   ^-  relay-descriptor
   =/  rid=relay-id  (scot %p our)
-  [rid our our-pub 1 ~ ~]
+  =/  msg=@  (jam [rid our our-pub 1])
+  =/  sig=@ux  (sign:ed:crypto msg our-seed)
+  [rid our our-pub 1 ~ ~ sig]
 ::
 ++  known-ships
   |=  relays=(map relay-id relay-descriptor)
@@ -307,6 +334,11 @@
     $(pool t.pool)
   ::  reject expired descriptors
   ?:  ?&(?=(^ expiry.i.pool) (gth now u.expiry.i.pool))
+    $(pool t.pool)
+  ::  Fix 4: reject unsigned or invalid-signature descriptors
+  =/  desc-msg=@  (jam [relay.i.pool ship.i.pool pub.i.pool weight.i.pool])
+  ?.  (veri:ed:crypto sig.i.pool desc-msg pub.i.pool)
+    ~&  [%skein %merge-relays %bad-sig relay.i.pool]
     $(pool t.pool)
   ?:  (~(has in ships) ship.i.pool)
     $(pool t.pool)
@@ -579,14 +611,15 @@
   ::  generate reply token and derive body key
   =/  token=reply-token  `@ux`(shaz (jam [%reply-token eny now]))
   =/  body-key=relay-key  (end [3 32] (shaz (jam [%reply-body token])))
-  ::  build onion headers for the return route
-  =/  built  (build-header hops body-key eny)
+  ::  build onion headers for the return route (no MAC for reply paths)
+  =/  built  (build-header hops body-key eny ~)
   ?~  built  ~
   =/  first=ship  ship.i.hops
   ::  store rngs in application order (reversed) so replier can use directly
   `[[token first header.u.built (flop rngs.u.built) (some (add now ~d1))] token]
 ::
-::  mint a contact-bundle: jam([%contact-v1 endpoint reply-block])
+::  mint a contact-bundle: jam([%contact-v2 app token first-hop header rngs expiry])
+::  Fix 1: no endpoint (ship) — destination encoded in reply-block header only
 ::
 ++  mint-contact-bundle
   |=  $:  app=app-id
@@ -608,9 +641,8 @@
       min-hops  health  recent  trusted
     ==
   ?~  rb-result  ~
-  =/  ep=endpoint  [our app]
   =/  rb=reply-block  reply-block.u.rb-result
-  ``@ux`(jam [%contact-v1 ep rb])
+  ``@ux`(jam [%contact-v2 app token.rb first-hop.rb header.rb rngs.rb expiry.rb])
 ::
 ::  crypto helpers — asymmetric (NaCl box via crub)
 ::
@@ -650,6 +682,31 @@
   ?~  rngs  body
   $(body `@ux`(en:crub:crypto i.rngs body), rngs t.rngs)
 ::
+::  Fix 5: compute per-hop body MACs for integrity checking
+::  takes fully wrapped body and rngs in hop order
+::  returns MACs in hop order: [mac-for-hop0 mac-for-hop1 ... mac-for-final]
+::
+++  compute-body-macs
+  |=  [wrapped=payload-box rngs=(list @ux)]
+  ^-  (list (unit @ux))
+  =/  n=@ud  (lent rngs)
+  ?:  =(n 0)  ~
+  ::  hop 0 sees fully wrapped body
+  =/  body=payload-box  wrapped
+  =/  hop=@ud  0
+  =/  acc=(list (unit @ux))  ~
+  |-
+  ?:  =(hop n)  (flop acc)
+  =/  mac=@ux  (end [3 32] (shaz body))
+  ::  peel one layer for next hop
+  =/  rng=@ux  (snag hop rngs)
+  =/  peeled=(unit payload-box)  (onion-peel-body body rng)
+  =.  acc  [`mac acc]
+  ?~  peeled
+    ::  can't peel further, fill remaining with ~
+    $(hop n)
+  $(hop +(hop), body u.peeled)
+::
 ++  onion-peel-body
   |=  [body=payload-box rng=@ux]
   ^-  (unit payload-box)
@@ -687,26 +744,37 @@
 ::
 ::  cell construction
 ::
+++  gen-rngs
+  |=  [n=@ud eny=@]
+  ^-  (list @ux)
+  =|  i=@ud
+  =|  acc=(list @ux)
+  |-
+  ?:  =(i n)  (flop acc)
+  $(i +(i), acc [(end [3 32] (shaz (jam [%skein-rng eny i]))) acc])
+::
 ++  build-header
-  |=  [hops=(list route-hop) body-key=relay-key eny=@]
+  |=  [hops=(list route-hop) body-key=relay-key eny=@ macs=(list (unit @ux))]
   ^-  (unit [header=header-box rngs=(list @ux)])
   ?~  hops  ~
   =/  n=@ud  (lent hops)
   ::  generate N rngs in hop order (one per hop for body onion)
-  =/  rngs=(list @ux)
-    =|  i=@ud
-    =|  acc=(list @ux)
-    |-
-    ?:  =(i n)  (flop acc)
-    $(i +(i), acc [(end [3 32] (shaz (jam [%skein-rng eny i]))) acc])
+  =/  rngs=(list @ux)  (gen-rngs n eny)
+  ::  Fix 5: per-hop body MACs (hop order). pad if shorter than hops
+  =/  mac-list=(list (unit @ux))
+    =/  ml=@ud  (lent macs)
+    ?:  (gte ml n)  macs
+    (weld macs (reap (sub n ml) *(unit @ux)))
   ::  build from inside out
   =/  rev=(list route-hop)  (flop hops)
   =/  rev-rngs=(list @ux)  (flop rngs)
+  =/  rev-macs=(list (unit @ux))  (flop mac-list)
   ?~  rev  ~
   ?~  rev-rngs  ~
+  ?~  rev-macs  ~
   ::  final hop layer: next=~, next-cell-id=~, include body-key and rng
   =/  final-layer=header-layer
-    [next=~ next-cell-id=~ inner=~ body-key=`body-key rng=`i.rev-rngs delay=delay.i.rev]
+    [next=~ next-cell-id=~ inner=~ body-key=`body-key rng=`i.rev-rngs delay=delay.i.rev body-mac=i.rev-macs]
   =/  sealed=(unit @ux)
     (seal-to-pub (jam final-layer) pub.i.rev eny)
   ?~  sealed  ~
@@ -714,14 +782,16 @@
   =/  prev-ship=ship  ship.i.rev
   =/  rest=(list route-hop)  t.rev
   =/  rest-rngs=(list @ux)  t.rev-rngs
+  =/  rest-macs=(list (unit @ux))  t.rev-macs
   =/  counter=@ud  1
   |-
   ?~  rest  `[acc rngs]
   ?~  rest-rngs  `[acc rngs]
+  ?~  rest-macs  `[acc rngs]
   ::  generate random next-cell-id for forwarding to prev-ship
   =/  cid=@uv  `@uv`(sham [%skein-cid eny counter])
   =/  layer=header-layer
-    [`prev-ship `cid `acc ~ `i.rest-rngs delay.i.rest]
+    [`prev-ship `cid `acc ~ `i.rest-rngs delay.i.rest i.rest-macs]
   =/  new-eny=@  (shaz (jam [eny counter]))
   =/  new-sealed=(unit @ux)
     (seal-to-pub (jam layer) pub.i.rest new-eny)
@@ -731,6 +801,7 @@
     prev-ship  ship.i.rest
     rest  t.rest
     rest-rngs  t.rest-rngs
+    rest-macs  t.rest-macs
     counter  +(counter)
   ==
 ::
@@ -862,7 +933,7 @@
           health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
           trusted=(set relay-id)
           retries=(list retry-entry)
-          minted-contacts=(map app-id @ux)
+          minted-contacts=(map @uv @ux)
       ==
   ^-  json
   %-  pairs:enjs:format
@@ -1040,19 +1111,21 @@
   =/  seed=@ux  (end [3 32] (shaz (jam [%skein-relay-seed our.bowl eny.bowl now.bowl])))
   =/  new-pub=@ux  `@ux`(puck:ed:crypto seed)
   ::
-  ?:  =(-.q.old 19)
-    =/  saved  !<(state-19 old)
+  ?:  =(-.q.old 20)
+    =/  saved  !<(state-20 old)
     =.  state  saved
     finish
-  ?:  =(-.q.old 18)
-    =/  saved  !<(state-18 old)
+  ?:  =(-.q.old 19)
+    ::  state-19→20: clear minted-contacts (type changed to map @uv @ux),
+    ::  clear relays (descriptor type changed with sig), clear seen
+    =/  saved  !<(state-19 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           queues.saved
-          relays.saved
-          seen.saved
+          ~              ::  relays cleared (descriptor type changed with sig)
+          ~              ::  seen cleared
           recent-routes.saved
           mix.saved
           our-seed.saved
@@ -1064,8 +1137,34 @@
           adaptive-hops.saved
           health.saved
           trusted.saved
-          descriptor-sources.saved
+          ~              ::  descriptor-sources cleared
           retries.saved
+          last-real-send.saved
+          ~              ::  minted-contacts cleared (type changed)
+      ==
+    finish
+  ?:  =(-.q.old 18)
+    =/  saved  !<(state-18 old)
+    =.  state
+      :*  %20
+          next-id.saved
+          apps.saved
+          ~              ::  queues cleared (protocol-incompatible)
+          ~              ::  relays cleared
+          ~              ::  seen cleared
+          recent-routes.saved
+          mix.saved
+          seed
+          new-pub
+          channels.saved
+          our-channels.saved
+          min-hops.saved
+          seeds.saved
+          adaptive-hops.saved
+          health.saved
+          trusted.saved
+          ~              ::  descriptor-sources cleared
+          ~              ::  retries cleared
           last-real-send.saved
           ~              ::  minted-contacts
       ==
@@ -1073,7 +1172,7 @@
   ?:  =(-.q.old 17)
     =/  saved  !<(state-17 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           ~              ::  queues cleared (protocol-incompatible)
@@ -1099,7 +1198,7 @@
   ?:  =(-.q.old 16)
     =/  saved  !<(state-16 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1125,7 +1224,7 @@
   ?:  =(-.q.old 15)
     =/  saved  !<(state-15 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1151,7 +1250,7 @@
   ?:  =(-.q.old 14)
     =/  saved  !<(state-14 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1177,7 +1276,7 @@
   ?:  =(-.q.old 13)
     =/  saved  !<(state-13 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1203,7 +1302,7 @@
   ?:  =(-.q.old 12)
     =/  saved  !<(state-12 old)
     =.  state
-      :*  %19
+      :*  %20
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1227,7 +1326,7 @@
       ==
     finish
   ::  incompatible older state — fresh start
-  =.  state  [%19 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl ~]
+  =.  state  [%20 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl ~]
   finish
   ::
   ++  finish
@@ -1339,12 +1438,15 @@
       =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
       =/  body-key=relay-key  (end [3 32] (shaz (jam [%skein-body eny.bowl cell-id])))
       =/  body=payload-box  (seal-body body-key env eny.bowl)
-      =/  built  (build-header hops.u.resolved-route body-key eny.bowl)
+      ::  Fix 5: compute body, wrap, MAC, then build header with MACs
+      =/  rngs=(list @ux)  (gen-rngs (lent hops.u.resolved-route) eny.bowl)
+      =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs))
+      =/  macs=(list (unit @ux))  (compute-body-macs wrapped-body rngs)
+      =/  built  (build-header hops.u.resolved-route body-key eny.bowl macs)
       ?~  built
         ~&  [%skein-send %header-build-failed from.req]
         :-  [(relay-card [%dropped cell-id 'header-build-failed'])]~
         this
-      =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs.u.built))
       =/  cell=relay-cell
         [cell-id header.u.built wrapped-body (expiry-for opts.req now.bowl)]
       =/  selected=route-log
@@ -1365,6 +1467,7 @@
       [(weld base-cards cards) this]
         ::
         ::  %contact: send via contact-bundle (reply-block-routed)
+        ::  Fix 1: v2 format — no endpoint in bundle, destination in header only
         ::
         %contact
       =/  cue-result  (mule |.((cue contact-bundle.to.req)))
@@ -1373,9 +1476,22 @@
         :-  [(relay-card [%dropped `@uv`0 'contact-cue-failed'])]~
         this
       =/  raw  p.cue-result
-      ::  validate structure: [%contact-v1 [ship app] [token first-hop header rngs expiry]]
+      ::  parse v2: [%contact-v2 app token first-hop header rngs expiry]
+      ::  or legacy v1: [%contact-v1 [ship app] [token first-hop header rngs expiry]]
       =/  parse-result
         %-  mule  |.
+        ?:  ?=([%contact-v2 *] raw)
+          =/  app=app-id   ;;(@tas +<.raw)
+          =/  rest  +>.raw
+          =/  token=reply-token  ;;(@ux -.rest)
+          =/  fh=ship            ;;(@p +<.rest)
+          =/  hdr=header-box     ;;(@ux +>-.rest)
+          =/  rngs=(list @ux)    ;;((list @ux) +>+<.rest)
+          =/  exp=(unit @da)     ;;((unit @da) +>+>.rest)
+          ::  dummy endpoint — real destination is in header onion
+          =/  ep=endpoint  [*@p app]
+          =/  rb=reply-block  [token fh hdr rngs exp]
+          [ep rb]
         ?>  ?=([%contact-v1 *] raw)
         =/  ep  (endpoint +<.raw)
         =/  rb  (reply-block +>.raw)
@@ -1386,7 +1502,7 @@
         this
       =/  ep=endpoint  -.p.parse-result
       =/  rb=reply-block  +.p.parse-result
-      ::  build envelope addressed to the real endpoint
+      ::  build envelope — ep may be dummy for v2 bundles
       =/  resolved-opts=send-options  [~ reply-blocks.opts.req ttl.opts.req]
       =/  env=envelope
         [next-id.state (local-endpoint from.req our.bowl) ep now.bowl payload.req resolved-opts]
@@ -1414,7 +1530,12 @@
     ==
   ::
       %skein-cell
-    =/  cell  !<(relay-cell vase)
+    ::  crash-safe: any malformed or incompatible cell is dropped, never bail: 3
+    =/  cell-result  (mule |.(!<(relay-cell vase)))
+    ?:  ?=(%| -.cell-result)
+      ~&  [%skein-cell %bad-cell-cast src.bowl]
+      `this
+    =/  cell=relay-cell  p.cell-result
     ::  drop expired and replayed cells
     ?:  (expired-cell cell now.bowl)
       :_  this
@@ -1432,10 +1553,18 @@
       [(relay-card [%dropped cell-id.cell 'undecryptable'])]~
     =/  base=(list card)
       [(relay-card [%received cell-id.cell src.bowl])]~
+    ::  Fix 5: verify body MAC if present (reply paths omit MAC)
+    ?:  ?&  ?=(^ body-mac.u.layer)
+            !=(u.body-mac.u.layer (end [3 32] (shaz body.cell)))
+        ==
+      [(weld base [(relay-card [%dropped cell-id.cell 'body-mac-mismatch'])]~) this]
     ::  peel body onion layer for this hop
     ?~  rng.u.layer
       [(weld base [(relay-card [%dropped cell-id.cell 'no-rng'])]~) this]
-    =/  peeled=(unit payload-box)  (onion-peel-body body.cell u.rng.u.layer)
+    =/  peel-result  (mule |.((onion-peel-body body.cell u.rng.u.layer)))
+    ?:  ?=(%| -.peel-result)
+      [(weld base [(relay-card [%dropped cell-id.cell 'body-peel-crashed'])]~) this]
+    =/  peeled=(unit payload-box)  p.peel-result
     ?~  peeled
       [(weld base [(relay-card [%dropped cell-id.cell 'body-peel-failed'])]~) this]
     ::  check if we are the final destination
@@ -1447,10 +1576,14 @@
         (open-body u.body-key.u.layer u.peeled)
       ?~  env
         [(weld base [(relay-card [%dropped cell-id.cell 'body-unopenable'])]~) this]
-      ?.  =(ship.target.u.env our.bowl)
+      ::  Fix 1: skip ship check for contact-routed v2 (dummy endpoint)
+      ::  verify app binding only; *@p target means contact-bundle routed
+      ?.  ?|  =(ship.target.u.env our.bowl)
+              =(ship.target.u.env *@p)
+          ==
         [(weld base [(relay-card [%dropped cell-id.cell 'wrong-target'])]~) this]
       =^  cards  queues.state
-        (deliver-envelope our.bowl u.env apps.state queues.state)
+        (deliver-envelope our.bowl u.env(target [our.bowl app.target.u.env]) apps.state queues.state)
       [(weld base cards) this]
     ::  forward to next hop — peel body, reassign cell-id
     =/  next-cell=relay-cell  (advance-cell cell u.layer u.peeled)
@@ -1613,9 +1746,13 @@
       `[%build-reply-block ~]
     ::
         %'mint-contact'
-      =/  app=app-id
-        ((ot:dejs:format ~[['app' so:dejs:format]]) jon)
-      `[%mint-contact app]
+      =/  parsed
+        %.  jon
+        %-  ot:dejs:format
+        :~  ['app' so:dejs:format]
+            ['label' (se:dejs:format %uv)]
+        ==
+      `[%mint-contact `@tas`-.parsed `@uv`+.parsed]
     ::
         %'trust-relay'
       =/  relay=relay-id
@@ -1651,7 +1788,7 @@
     ::
         %put-relay
       =.  relays.state  (~(put by relays.state) relay.descriptor.act descriptor.act)
-      =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state)
+      =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state our-seed.state)
       :-  :~  (relay-card [%relay-added descriptor.act])
               (pool-fact-card [our-rd (relays-list relays.state)])
           ==
@@ -1659,7 +1796,7 @@
     ::
         %drop-relay
       =.  relays.state  (~(del by relays.state) relay.act)
-      =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state)
+      =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state our-seed.state)
       :-  :~  (relay-card [%relay-removed relay.act])
               (pool-fact-card [our-rd (relays-list relays.state)])
           ==
@@ -1759,9 +1896,10 @@
       ?~  result
         ~&  [%skein %mint-contact-failed app.act %insufficient-relays]
         `this
-      =.  minted-contacts.state  (~(put by minted-contacts.state) app.act u.result)
-      ~&  [%skein %contact-minted app.act]
-      :-  [(relay-card [%contact-minted app.act])]~
+      ::  Fix 2: store per-label (not per-app) so each nym gets unique bundle
+      =.  minted-contacts.state  (~(put by minted-contacts.state) label.act u.result)
+      ~&  [%skein %contact-minted app.act label.act]
+      :-  [(relay-card [%contact-minted app.act label.act])]~
       this
     ::
         %trust-relay
@@ -1825,8 +1963,9 @@
     ``noun+!>(seeds.state)
   ::
       [%x %contact @ ~]
-    =/  app=app-id  i.t.t.path
-    =/  bundle  (~(get by minted-contacts.state) app)
+    ::  Fix 2: scry by label (@uv) instead of app-id
+    =/  label=@uv  (slav %uv i.t.t.path)
+    =/  bundle  (~(get by minted-contacts.state) label)
     ?~  bundle  [~ ~]
     ``noun+!>(u.bundle)
   ==
@@ -1840,7 +1979,7 @@
   ::
       [%relay %pool ~]
     ::  send our pool including our own descriptor so subscriber gets our pub
-    =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state)
+    =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state our-seed.state)
     =/  full-pool=(list relay-descriptor)  [our-rd (relays-list relays.state)]
     ::  subscribe back to learn their pub (if not already known)
     =/  sub-ship=ship  src.bowl
@@ -1905,7 +2044,12 @@
     ?+  -.sign  (on-agent:def wire sign)
         %fact
       ?.  =(%skein-relay-pool p.cage.sign)  `this
-      =/  pool=(list relay-descriptor)  !<((list relay-descriptor) q.cage.sign)
+      ::  crash-safe: reject incompatible descriptor formats (e.g. pre-sig)
+      =/  pool-cast  (mule |.(!<((list relay-descriptor) q.cage.sign)))
+      ?:  ?=(%| -.pool-cast)
+        ~&  [%skein %relay-pool %type-mismatch source=(slav %p i.t.t.wire)]
+        `this
+      =/  pool=(list relay-descriptor)  p.pool-cast
       =/  source=ship  (slav %p i.t.t.wire)
       =/  [new-rds=(list relay-descriptor) new-relays=(map relay-id relay-descriptor) new-sources=(map relay-id ship)]
         (merge-relays our.bowl pool relays.state descriptor-sources.state source now.bowl)
@@ -1931,7 +2075,7 @@
         =/  seg=@ta  (scot %p ship.rd)
         ?:  (~(has by wex.bowl) [/channel/sub/[seg]/[cid] ship.rd %skein])  ~
         `(channel-sub-card ship.rd cid)
-      =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state)
+      =/  our-rd=relay-descriptor  (self-descriptor our.bowl our-pub.state our-seed.state)
       :_  this
       ;:  weld
         [(pool-fact-card [our-rd (relays-list relays.state)])]~
@@ -1958,7 +2102,11 @@
     ?+  -.sign  (on-agent:def wire sign)
         %fact
       ?.  =(%skein-channel p.cage.sign)  `this
-      =/  upd  !<(channel-update q.cage.sign)
+      =/  upd-cast  (mule |.(!<(channel-update q.cage.sign)))
+      ?:  ?=(%| -.upd-cast)
+        ~&  [%skein %channel-fact %type-mismatch relay-ship cid]
+        `this
+      =/  upd=channel-update  p.upd-cast
       =/  app=(unit app-id)  (~(get by our-channels.state) cid)
       ?~  app  `this
       ::  forward channel update to app as tagged noun

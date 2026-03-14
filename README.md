@@ -1,37 +1,68 @@
 # %skein
 
-`%skein` is a routed transport for Urbit apps. It lets one app send opaque payloads to another app through a relay chain, and it provides discovery, inbox queues, relay events, retries, batching, and a small operator UI.
+`%skein` is a routed transport desk for Urbit apps. A local app binds to `%skein`, hands it an opaque payload, and `%skein` delivers that payload over a multi-hop relay path instead of a direct ship-to-ship poke.
 
-If you are building an app on Urbit and you want multi-hop delivery without inventing a transport layer from scratch, `%skein` is the piece you integrate with.
+It is the transport layer under `%silk`, but it is meant to be reusable by any app that wants routed delivery, relay discovery, reply paths, and basic operator tooling without building a transport stack from scratch.
 
-![screenshot](https://ams3.digitaloceanspaces.com/urbits3/sitful-hatred/2026.3.14..05.23.46..9439.5810.624d.d2f1-8791dfe7-42cf-45cd-93e1-ae1cc6ede882.png)
+## What `%skein` does
 
-## What it does
+- Binds local apps so they can send and receive through `%skein`
+- Maintains a relay set from discovered relay descriptors
+- Selects multi-hop routes with health, trust, and minimum-hop policy
+- Mints opaque contact bundles that higher-level apps can hand around
+- Builds reply paths so a recipient can answer without a direct `[ship app]` route
+- Encrypts a header layer per hop and wraps the body in per-hop layers
+- Reassigns the visible `cell-id` at each forward step
+- Retries failed first-hop sends with bounded backoff
+- Batches delayed forwards and emits simple cover traffic
+- Exposes relay events, app inboxes, scries, and a small HTTP operator surface
 
-- binds local apps so they can send and receive through `%skein`
-- discovers relays through relay-pool gossip
-- selects relay routes using weight, health, trust, and minimum-hop settings
-- encrypts routing headers per hop
-- encrypts message bodies and wraps them in per-hop body layers
-- forwards cells through relays with optional hop delays and epoch batching
-- retries failed first-hop sends with backoff
-- exposes relay events and per-app inbox watches
-- supports channel-based peer discovery
-- builds reply blocks
-- mints contact bundles for local apps
+## What `%skein` is for
+
+Use `%skein` when:
+
+- your app wants to talk to another app over an overlay path instead of a direct poke
+- your app wants to publish an opaque contact instead of a raw ship address
+- you want replyable asynchronous messaging between Urbit apps
+
+Do not use `%skein` as your only security story if you need:
+
+- protection from a global network observer
+- strong Sybil resistance in relay discovery
+- private channel membership
+- anonymous on-chain payments
+
+## How it works
+
+1. A local app binds to `%skein`.
+2. `%skein` discovers relays and keeps their descriptors.
+3. The app either targets a direct `[%endpoint [ship app]]` destination or an opaque `[%contact bundle]`.
+4. `%skein` chooses a route, encrypts one header layer per hop, and wraps the body in one layer per hop.
+5. Each relay opens only its layer, peels one body layer, and forwards the cell.
+6. The final `%skein` instance opens the payload and pokes the bound local app.
+
+For contact-bundle sends, the calling app does not need the destination ship. `%skein` resolves the bundle locally.
 
 ## Quick start
 
-### 1. Bind an app and discover a relay
+Bind an app and discover a relay:
 
 ```hoon
 /-  *skein
-:~  [%pass /discover %agent [our %skein] %poke %skein-admin !>([%discover-relay ~sampel-palnet])]
-    [%pass /bind %agent [our %skein] %poke %skein-admin !>([%bind %echo])]
+:~  [%pass /bind %agent [our %skein] %poke %skein-admin !>([%bind %echo])]
+    [%pass /discover %agent [our %skein] %poke %skein-admin !>([%discover-relay ~sampel-palnet])]
 ==
 ```
 
-### 2. Send a message
+Mint a contact bundle for that app. The `label` lets one app mint more than one distinct contact:
+
+```hoon
+/-  *skein
+[%pass /contact %agent [our %skein] %poke %skein-admin !>([%mint-contact %echo 0v1])]
+.^(noun %gx /=skein=/x/contact/0v1/noun)
+```
+
+Send directly to an endpoint:
 
 ```hoon
 /-  *skein
@@ -44,22 +75,14 @@ If you are building an app on Urbit and you want multi-hop delivery without inve
 [%pass /send %agent [our %skein] %poke %skein-send !>(req)]
 ```
 
-### 3. Mint a contact bundle
-
-```hoon
-/-  *skein
-[%pass /contact %agent [our %skein] %poke %skein-admin !>([%mint-contact %echo])]
-.^(noun %gx /=skein=/x/contact/echo/noun)
-```
-
-### 4. Watch events and your app inbox
+Watch relay events and the bound app inbox:
 
 ```hoon
 [%pass /relay-events %agent [our %skein] %watch /relay/events]
 [%pass /echo-inbox %agent [our %skein] %watch /app/echo/inbox]
 ```
 
-### 5. Inspect state with scries
+Inspect state:
 
 ```hoon
 .^(noun %gx /=skein=/x/stats/noun)
@@ -67,124 +90,28 @@ If you are building an app on Urbit and you want multi-hop delivery without inve
 .^(noun %gx /=skein=/x/routes/noun)
 ```
 
-## How message delivery works
+## Privacy model
 
-1. Your app sends a `send-request` to `%skein`.
-2. `%skein` either uses the direct `[%endpoint ...]` destination you supplied or decodes a `[%contact bundle]` into an endpoint plus reply-block material.
-3. `%skein` chooses a route unless the destination already came with reply-block routing material.
-4. `%skein` encrypts the message envelope under a body key.
-5. `%skein` wraps the encrypted body in one layer per hop.
-6. `%skein` builds a nested header so each relay can open only its own hop instructions.
-7. Each relay opens one header layer, peels one body layer, and forwards to the next hop.
-8. The destination `%skein` opens the final body, queues the envelope, emits an event, and pokes the target app with the payload.
+What `%skein` currently provides:
 
-If the target ship is local and no remote route is needed, `%skein` delivers locally instead of building a routed cell.
+- relays only learn their local hop instruction, not the whole path
+- the body is wrapped per hop, so non-final relays are not supposed to see the delivered payload
+- contact bundles do not expose a raw destination endpoint to the calling app
+- reply paths are live, so higher-level apps can answer without storing a direct route
 
-## Flow diagram
+What `%skein` still leaks or does not solve:
 
-```mermaid
-sequenceDiagram
-    participant A as Sending App
-    participant S as Sender %skein
-    participant R1 as Relay 1
-    participant R2 as Relay 2
-    participant D as Destination %skein
-    participant T as Target App
+- relay discovery is still bootstrap-driven and not Sybil-hard
+- traffic timing, coarse size, and first-hop behavior still leak metadata
+- channels are explicit membership directories if you use them
+- cover traffic is lightweight, not a high-assurance anonymity defense
+- on-chain settlement is outside `%skein`
 
-    A->>S: %skein-send(send-request)
-    S->>S: choose route
-    S->>S: encrypt envelope
-    S->>S: wrap body for each hop
-    S->>S: seal nested headers
-    S->>R1: relay-cell
-    R1->>R1: open local header
-    R1->>R1: peel local body layer
-    R1->>R2: forwarded relay-cell
-    R2->>R2: open local header
-    R2->>R2: peel local body layer
-    R2->>D: forwarded relay-cell
-    D->>D: decrypt final body
-    D->>T: %noun poke with payload
-    D-->>A: relay event / inbox event
-```
+The right way to describe `%skein` today is: a useful routed transport with meaningful privacy improvements over direct app-to-app pokes, not a complete anonymity system.
 
-## Common tasks
+## Operator surface
 
-### Join a discovery channel
-
-```hoon
-/-  *skein
-[%pass /join %agent [our %skein] %poke %skein-admin !>([%join-channel %silk-market %echo])]
-```
-
-Channel updates are forwarded to the joined app as tagged `%noun` pokes:
-
-```hoon
-[%channel-join channel-id ship]
-[%channel-leave channel-id ship]
-[%channel-members channel-id (list ship)]
-```
-
-### Set routing policy
-
-```hoon
-/-  *skein
-=/  rid=relay-id  (scot %p ~sampel-palnet)
-:~  [%pass /min-hops %agent [our %skein] %poke %skein-admin !>([%set-min-hops 2])]
-    [%pass /adaptive %agent [our %skein] %poke %skein-admin !>([%set-adaptive-hops %.y])]
-    [%pass /trust %agent [our %skein] %poke %skein-admin !>([%trust-relay rid])]
-==
-```
-
-### Build a reply block
-
-```hoon
-/-  *skein
-[%pass /reply-block %agent [our %skein] %poke %skein-admin !>([%build-reply-block ~])]
-```
-
-You can also inspect a freshly generated one with:
-
-```hoon
-.^(noun %gx /=skein=/x/reply-block/noun)
-```
-
-## Security notes
-
-What `%skein` gives you:
-
-- relays do not get a cleartext origin, target, or full route in the cell format
-- each relay opens one header layer and peels one body layer
-- non-final relays are not supposed to see the final message payload
-- routes can include multiple relay hops with optional delay and batching
-
-What `%skein` does not give you:
-
-- authenticated sender identity inside the delivered envelope
-- a private channel membership system
-- signed relay discovery
-- fixed-size traffic
-- strong protection against active tagging or timing correlation
-- privacy from the local sending app when that app hands `%skein` a direct `[ship app]` endpoint
-- opaque contact bundles; a contact bundle is plain jammed `[%contact-v1 endpoint reply-block]`
-- protection against malicious seeds or Sybil relays biasing path selection
-- protection against entry-hop / exit-hop correlation by colluding relays
-
-Practical meaning:
-
-- use `%skein` as a routed transport layer
-- do not describe it as a high-assurance anonymity system
-- if your app needs authenticated senders, add authentication at the app layer
-- if your app needs private peer discovery, do not rely on channels for that
-- if your app hands `%skein` a direct destination ship, that ship is known to the sender app by definition
-- if your app hands around contact bundles, any peer or app that knows the bundle format can recover the embedded endpoint
-- 3 or more hops help against ordinary relays, but they do not by themselves stop a malicious directory, a Sybil relay set, or colluding entry/exit relays from correlating traffic
-- relay cells carry a visible `cell-id` that is only used for replay detection, so an active relay can retag or clone traffic for downstream correlation
-- watched relays learn which ships subscribe to their relay pools and channels
-
-## Interface summary
-
-### Marks
+Marks:
 
 - `%skein-admin`
 - `%skein-send`
@@ -193,55 +120,34 @@ Practical meaning:
 - `%skein-relay-pool`
 - `%skein-channel`
 
-### Common admin actions
+Common admin actions:
 
 - `%bind` / `%unbind`
 - `%discover-relay`
-- `%join-channel` / `%leave-channel`
+- `%mint-contact`
+- `%build-reply-block`
 - `%set-min-hops`
 - `%set-adaptive-hops`
 - `%trust-relay` / `%untrust-relay`
 - `%add-seed` / `%drop-seed`
-- `%clear-seen`
-- `%build-reply-block`
-- `%mint-contact`
+- `%join-channel` / `%leave-channel`
 
-### Watches
+Watches:
 
 - `/relay/events`
 - `/relay/pool`
 - `/channel/<channel-id>`
 - `/app/<app>/inbox`
 
-### Scries
+Scries:
 
 - `/x/state`
-- `/x/app/<app>`
-- `/x/contact/<app>`
 - `/x/descriptors`
 - `/x/routes`
 - `/x/stats`
+- `/x/contact/<label>`
 - `/x/reply-block`
-- `/x/health`
-- `/x/trusted`
-- `/x/seeds`
 
-## Repository guide
+## Relationship to `%silk`
 
-- [desk/app/skein.hoon](desk/app/skein.hoon): main Gall agent
-- [desk/sur/skein.hoon](desk/sur/skein.hoon): transport types
-- [desk/sur/skein-crypto.hoon](desk/sur/skein-crypto.hoon): crypto-layer types
-- [desk/tests/app/skein.hoon](desk/tests/app/skein.hoon): test coverage
-- [ui/](ui/): operator dashboard
-- [sync](sync): desk/UI sync helper
-
-## Tests
-
-The test file at [desk/tests/app/skein.hoon](desk/tests/app/skein.hoon) covers:
-
-- jam / cue payload round-trips
-- symmetric encryption round-trips
-- shared-secret round-trips
-- sealed header/body round-trips
-- body onion wrap / peel round-trips
-- seen-cache pruning
+`%skein` is transport only. `%silk` adds marketplace identities, listings, negotiation, escrow, moderators, and reputation on top of it.
