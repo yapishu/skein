@@ -793,6 +793,28 @@ td.truncate {
   opacity: 0.6;
 }
 
+.dash-topo {
+  margin-bottom: 24px;
+}
+
+.dash-topo .topo-svg {
+  max-height: 380px;
+}
+
+.dash-topo .topo-legend {
+  padding-top: 10px;
+}
+
+.route-color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  box-shadow: 0 0 6px currentColor;
+}
+
 /* --- responsive --- */
 @media (max-width: 900px) {
   .sidebar { width: 60px; }
