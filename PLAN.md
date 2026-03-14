@@ -1,16 +1,18 @@
 # Skein Design Plan
 
-This plan is based on the `%skein` code that exists now. The goal is not to replace the current transport with a different system. The goal is to harden the current design by extending the pieces that are already live:
+This plan is based on the `%skein` code that exists now (state-20). The goal is not to replace the current transport with a different system. The goal is to harden the current design by extending the pieces that are already live:
 
-- signed relay descriptors
+- Ed25519-signed relay descriptors (state-20: `merge-relays` rejects unsigned/bad-sig)
 - route health and trust scoring
-- opaque contact bundles and reply blocks
-- per-hop body peeling and per-hop `cell-id` reassignment
+- opaque contact bundles (`contact-v2`: no endpoint/ship in bundle) and reply blocks
+- per-hop body peeling, per-hop `cell-id` reassignment, and per-hop body MAC integrity
+- per-label contact minting (`minted-contacts=(map @uv @ux)`)
 - retry, batching, and lightweight cover traffic
+- crash-safe cell and relay-pool handlers (`mule`-wrapped type casts)
 
 ## Design direction
 
-The current `%skein` is already a usable routed transport. The next version should keep the same mental model and improve three things:
+The current `%skein` is already a usable routed transport with real crypto hardening. The next version should keep the same mental model and improve three things:
 
 1. joining the network from one known peer without giving that peer total control over the visible relay set
 2. reducing linkability from repeated contact use, timing, and size
@@ -18,7 +20,7 @@ The current `%skein` is already a usable routed transport. The next version shou
 
 ## Workstream 1: turn descriptor provenance into routing policy
 
-Current code already tracks descriptor sources and verifies descriptor signatures. The next change should make provenance affect route eligibility instead of being passive metadata.
+Descriptor signatures are now live: `relay-descriptor` includes `sig=@ux` (Ed25519 of `[relay ship pub weight]` signed by the relay's own seed), and `merge-relays` rejects unsigned or bad-signature descriptors. The next change should make provenance affect route eligibility instead of being passive metadata.
 
 ### Design change
 
@@ -56,11 +58,13 @@ This work mostly changes route admission rules, not the cell format.
 
 ## Workstream 2: evolve contact bundles into introduction bundles
 
-Current contact bundles already hide the destination ship from the caller. The next problem is reuse and linkability.
+Contact bundles now use the opaque `contact-v2` format: `jam([%contact-v2 app token first-hop header rngs expiry])` — no endpoint/ship in the bundle. Minting is per-label via `[%mint-contact app=app-id label=@uv]`, stored in `minted-contacts=(map @uv @ux)`, scried via `/x/contact/<label>`. The sender parses both v1 (legacy) and v2 formats. The receiver accepts dummy endpoints (`*@p`) for v2-routed cells and verifies app binding only.
+
+The next problem is reuse and linkability.
 
 ### Design change
 
-Keep the current `contact-v2` idea, but make a minted contact represent a small batch of single-use ingress tokens rather than one long-lived reusable ingress path.
+Keep the current `contact-v2` format, but make a minted contact represent a small batch of single-use ingress tokens rather than one long-lived reusable ingress path.
 
 A next-step contact bundle should carry:
 
@@ -153,6 +157,8 @@ This change mostly affects send bookkeeping and retry behavior.
 
 Channels are useful coordination primitives. They are also public directories.
 
+`%silk` has completed its move away from channel-based discovery: `silk-core` no longer joins `%silk-market` channel (removed from on-init, on-load sends `%leave-channel`). Peer discovery now uses relay-pool probing — silk-core periodically scries skein's descriptor list and sends `%catalog-request` to each known ship. Ships running silk-core auto-peer; others silently drop.
+
 ### Design change
 
 Do not try to make channels private. Keep them as explicit membership surfaces.
@@ -166,7 +172,7 @@ For privacy-sensitive apps, add a separate introduction flow built on the contac
 ### Why this fits the current design
 
 - channel support already works and should stay simple
-- `%silk` has already started moving away from channel-based discovery
+- `%silk` has already completed the move away from channel-based discovery
 
 ## Workstream 6: add real integration coverage
 
@@ -174,7 +180,16 @@ The current test desk covers helper behavior. The next phase needs protocol test
 
 ### Test additions
 
-- descriptor merge tests with mixed good and bad signatures
+Already testable with current code:
+
+- descriptor merge tests with mixed good and bad signatures (signed descriptors are live)
+- body MAC computation and verification round-trip tests
+- contact-v2 mint → cue round-trip (verify no endpoint leaks)
+- per-label contact minting (two labels → different bundles)
+- crash-safe cell handler (malformed cells dropped, not bail:3)
+
+Remaining (depends on future workstreams):
+
 - route admission tests for `%provisional` versus `%usable` relays
 - contact-bundle consumption and reply reissue tests
 - multi-hop forwarding tests with per-hop `cell-id` changes

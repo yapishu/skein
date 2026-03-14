@@ -19,6 +19,35 @@
 ++  retry-base  ~s10          ::  base backoff for retries
 ++  trusted-weight-boost  5   ::  weight multiplier for trusted relays
 ++  cover-quiet-threshold  ~m2  ::  send extra cover if no real sends for this long
+++  usable-source-threshold  2  ::  sources needed before relay becomes %usable
+++  max-alternates  2           ::  max alternate routes in route-set
+::
+::  workstream 3: cell profile dimensions (bytes)
+::
+++  profile-body-size
+  |=  p=cell-profile
+  ^-  @ud
+  ?-  p
+    %small   8.192
+    %medium  32.768
+    %large   131.072
+  ==
+::
+++  profile-header-size
+  |=  p=cell-profile
+  ^-  @ud
+  ?-  p
+    %small   2.048
+    %medium  4.096
+    %large   8.192
+  ==
+::
+++  auto-profile
+  |=  payload-size=@ud
+  ^-  cell-profile
+  ?:  (lte payload-size 8.192)    %small
+  ?:  (lte payload-size 32.768)   %medium
+  %large
 ::
 ::  internal types
 ::
@@ -32,6 +61,7 @@
       target=ship
       attempts=@ud
       next-try=@da
+      alternates=(list route)  ::  workstream 4: alternate routes for retry
   ==
 ::
 +$  mix-state
@@ -50,7 +80,7 @@
       relays=*
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-key=relay-key
   ==
 ::
@@ -64,7 +94,7 @@
       relays=*
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-key=relay-key
       channels=(map channel-id (map @p @da))
       our-channels=(map channel-id app-id)
@@ -80,7 +110,7 @@
       relays=*
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-key=relay-key
       channels=(map channel-id (map @p @da))
       our-channels=(map channel-id app-id)
@@ -98,7 +128,7 @@
       relays=*
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-key=relay-key
       channels=(map channel-id (map @p @da))
       our-channels=(map channel-id app-id)
@@ -119,7 +149,7 @@
       relays=*
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-key=relay-key
       channels=(map channel-id (map @p @da))
       our-channels=(map channel-id app-id)
@@ -141,7 +171,7 @@
       relays=*                                ::  type changed (relay-descriptor)
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-key=relay-key
       channels=(map channel-id (map @p @da))
       our-channels=(map channel-id app-id)
@@ -166,7 +196,7 @@
       relays=*                                ::  opaque — cleared on upgrade
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-seed=@ux                            ::  crub private seed (never published)
       our-pub=@ux                             ::  crub public key (published in descriptor)
       channels=(map channel-id (map @p @da))
@@ -177,7 +207,7 @@
       health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
       trusted=(set relay-id)
       descriptor-sources=(map relay-id ship)
-      retries=(list retry-entry)
+      retries=*                               ::  opaque (type changed)
       last-real-send=@da
   ==
 ::
@@ -189,7 +219,7 @@
       relays=*                                ::  opaque — cleared on upgrade (type changed)
       seen=(map @uv @da)
       recent-routes=(list route-log)
-      mix=mix-state
+      mix=*                                   ::  opaque (relay-cell type changed)
       our-seed=@ux                            ::  crub private seed (never published)
       our-pub=@ux                             ::  crub public key (published in descriptor)
       channels=(map channel-id (map @p @da))
@@ -200,7 +230,7 @@
       health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
       trusted=(set relay-id)
       descriptor-sources=(map relay-id ship)
-      retries=(list retry-entry)
+      retries=*                               ::  opaque (type changed)
       last-real-send=@da
       minted-contacts=*                       ::  opaque — cleared on upgrade (type changed)
   ==
@@ -208,6 +238,33 @@
 ::
 +$  state-20
   $:  %20
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map @uv @da)
+      recent-routes=(list route-log)
+      mix=*                                     ::  opaque (relay-cell type changed)
+      our-seed=@ux
+      our-pub=@ux
+      channels=(map channel-id (map @p @da))
+      our-channels=(map channel-id app-id)
+      min-hops=@ud
+      seeds=(set @p)
+      adaptive-hops=?
+      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+      trusted=(set relay-id)
+      descriptor-sources=(map relay-id ship)
+      retries=*                                 ::  opaque (type changed)
+      last-real-send=@da
+      minted-contacts=(map @uv @ux)   ::  Fix 2: keyed by label, not app-id
+  ==
+::
+::
+::  state-21: provenance-aware relay metadata, cell profiles, route-set retries
+::
++$  state-21
+  $:  %21
       next-id=@ud
       apps=(set app-id)
       queues=(map app-id (list envelope))
@@ -224,13 +281,13 @@
       adaptive-hops=?
       health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
       trusted=(set relay-id)
-      descriptor-sources=(map relay-id ship)
+      relay-metas=(map relay-id relay-meta)    ::  workstream 1: provenance metadata
       retries=(list retry-entry)
       last-real-send=@da
-      minted-contacts=(map @uv @ux)   ::  Fix 2: keyed by label, not app-id
+      minted-contacts=(map @uv @ux)
   ==
 ::
-+$  current-state  state-20
++$  current-state  state-21
 +$  card  card:agent:gall
 ::
 ::  path helpers
@@ -317,19 +374,21 @@
   |=  $:  ours=ship
           pool=(list relay-descriptor)
           relays=(map relay-id relay-descriptor)
-          sources=(map relay-id ship)
+          metas=(map relay-id relay-meta)
+          trusted=(set relay-id)
           source=ship
           now=@da
       ==
-  ^-  [(list relay-descriptor) (map relay-id relay-descriptor) (map relay-id ship)]
-  ::  returns [new-descriptors updated-map updated-sources]
+  ^-  [(list relay-descriptor) (map relay-id relay-descriptor) (map relay-id relay-meta)]
+  ::  returns [new-descriptors updated-map updated-metas]
   ::  caps at max-relays, deduplicates by ship, skips self, enforces expiry
+  ::  workstream 1: tracks multiple sources per relay, computes status
   =/  ships=(set ship)  (known-ships relays)
   =/  new=(list relay-descriptor)  ~
   |-
-  ?~  pool  [(flop new) relays sources]
+  ?~  pool  [(flop new) relays metas]
   ?:  (gte ~(wyt by relays) max-relays)
-    [(flop new) relays sources]
+    [(flop new) relays metas]
   ?:  =(ship.i.pool ours)
     $(pool t.pool)
   ::  reject expired descriptors
@@ -340,13 +399,44 @@
   ?.  (veri:ed:crypto sig.i.pool desc-msg pub.i.pool)
     ~&  [%skein %merge-relays %bad-sig relay.i.pool]
     $(pool t.pool)
+  ::  update metadata for existing relay (add source)
   ?:  (~(has in ships) ship.i.pool)
+    ::  already have this ship — update source tracking for its relay-id
+    ?:  (~(has by relays) relay.i.pool)
+      =/  cur-meta=relay-meta  (gut-relay-meta relay.i.pool metas now)
+      =/  new-sources=(set ship)  (~(put in sources.cur-meta) source)
+      =/  new-status=relay-status
+        (compute-relay-status relay.i.pool new-sources trusted)
+      =/  upd=relay-meta
+        [new-sources first-seen.cur-meta now new-status]
+      =.  metas  (~(put by metas) relay.i.pool upd)
+      $(pool t.pool)
     $(pool t.pool)
+  ::  new relay — initialize metadata
+  =/  init-status=relay-status
+    (compute-relay-status relay.i.pool (sy ~[source]) trusted)
+  =/  meta=relay-meta  [(sy ~[source]) now now init-status]
   =.  relays   (~(put by relays) relay.i.pool i.pool)
-  =.  sources  (~(put by sources) relay.i.pool source)
+  =.  metas    (~(put by metas) relay.i.pool meta)
   =.  ships    (~(put in ships) ship.i.pool)
   =.  new  [i.pool new]
   $(pool t.pool)
+::
+::  workstream 1: compute relay status from source count and trust
+::
+++  compute-relay-status
+  |=  [rid=relay-id sources=(set ship) trusted=(set relay-id)]
+  ^-  relay-status
+  ?:  (~(has in trusted) rid)  %trusted
+  ?:  (gte ~(wyt in sources) usable-source-threshold)  %usable
+  %provisional
+::
+++  gut-relay-meta
+  |=  [rid=relay-id metas=(map relay-id relay-meta) now=@da]
+  ^-  relay-meta
+  =/  existing  (~(get by metas) rid)
+  ?~  existing  [~ now now %provisional]
+  u.existing
 ::
 ++  discovery-sub-cards
   |=  [our=ship relays=(map relay-id relay-descriptor) wex=(map [wire ship term] [acked=? =path])]
@@ -446,15 +536,33 @@
   ?~  expiry.descriptor  %.y
   (lth now u.expiry.descriptor)
 ::
+::  workstream 1: eligible-relays now takes relay-metas and filters by status
+::  role: %any = all usable+trusted, %middle = only usable+trusted (no provisional)
+::  %entry = provisional allowed (for first-hop fallback)
+::
 ++  eligible-relays
-  |=  [our=ship relays=(map relay-id relay-descriptor) target=ship now=@da]
+  |=  $:  our=ship
+          relays=(map relay-id relay-descriptor)
+          metas=(map relay-id relay-meta)
+          target=ship
+          now=@da
+          role=?(%any %middle %entry)
+      ==
   ^-  (list relay-descriptor)
   %+  murn  (relays-list relays)
   |=  d=relay-descriptor
   ?:  =(ship.d our)  ~
   ?:  =(ship.d target)  ~
   ?.  (live-relay d now)  ~
-  `d
+  ::  workstream 1: filter by provenance status based on role
+  =/  meta=relay-meta  (gut-relay-meta relay.d metas now)
+  ?-  role
+    %any     `d
+    %entry   `d                  ::  provisional OK for entry/first hops
+    %middle
+      ?:  =(status.meta %provisional)  ~
+      `d
+  ==
 ::
 ++  relay-score
   |=  $:  rd=relay-descriptor
@@ -517,10 +625,15 @@
     $(descriptors t.descriptors)
   `[ship.i.descriptors relay.i.descriptors pub.i.descriptors default-delay.i.descriptors]
 ::
+::  workstream 1+4: select-route now takes metas, returns route-set
+::  builds primary route from usable/trusted middle hops,
+::  then builds alternates with different entry relays
+::
 ++  select-route
   |=  $:  our=ship
           target=endpoint
           relays=(map relay-id relay-descriptor)
+          metas=(map relay-id relay-meta)
           now=@da
           eny=@
           min-hops=@ud
@@ -528,9 +641,13 @@
           recent=(list route-log)
           trusted=(set relay-id)
       ==
-  ^-  (unit route)
-  =/  candidates=(list relay-descriptor)
-    (shuffle-relays eny (eligible-relays our relays ship.target now) health trusted)
+  ^-  (unit route-set)
+  ::  workstream 1: use %middle role for middle hops (excludes provisional)
+  =/  mid-candidates=(list relay-descriptor)
+    (shuffle-relays eny (eligible-relays our relays metas ship.target now %middle) health trusted)
+  ::  workstream 1: use %entry role for all candidates (allows provisional as entry)
+  =/  all-candidates=(list relay-descriptor)
+    (shuffle-relays eny (eligible-relays our relays metas ship.target now %entry) health trusted)
   =/  final-hop=(unit route-hop)  (target-route-hop relays ship.target now)
   ::  exclude target + ships from most recent route to same target
   =/  prev-hops=(list ship)
@@ -541,18 +658,78 @@
     =/  base=(set ship)
       ?~(final-hop ~ (sy ~[ship.target]))
     (~(uni in base) (sy prev-hops))
-  =/  mids=(list route-hop)  (unique-hops candidates min-hops exclude)
-  ::  fall back without route-reuse exclusion if not enough hops
+  =/  mids=(list route-hop)  (unique-hops mid-candidates min-hops exclude)
+  ::  fall back: try without route-reuse exclusion
   =/  mids=(list route-hop)
     ?:  (gte (lent mids) min-hops)  mids
     =/  base-exclude=(set ship)
       ?~(final-hop ~ (sy ~[ship.target]))
-    (unique-hops candidates min-hops base-exclude)
+    (unique-hops mid-candidates min-hops base-exclude)
+  ::  fall back: allow provisional relays as middle hops if not enough usable
+  =/  mids=(list route-hop)
+    ?:  (gte (lent mids) min-hops)  mids
+    =/  base-exclude=(set ship)
+      ?~(final-hop ~ (sy ~[ship.target]))
+    (unique-hops all-candidates min-hops base-exclude)
   =/  hops=(list route-hop)
     ?~  final-hop  mids
     (snoc mids u.final-hop)
   ?~  hops  ~
-  `[(sham [eny target now]) hops]
+  =/  primary=route  [(sham [eny target now]) hops]
+  ::  workstream 4: build alternate routes with different entry relays
+  =/  primary-entry=(set ship)  (sy ~[ship.i.hops])
+  =/  alts=(list route)
+    (build-alternates our target relays metas now eny min-hops health trusted final-hop primary-entry)
+  `[primary alts]
+::
+::  workstream 4: build alternate routes with different entry relays
+::
+++  build-alternates
+  |=  $:  our=ship
+          target=endpoint
+          relays=(map relay-id relay-descriptor)
+          metas=(map relay-id relay-meta)
+          now=@da
+          eny=@
+          min-hops=@ud
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          trusted=(set relay-id)
+          final-hop=(unit route-hop)
+          used-entries=(set ship)
+      ==
+  ^-  (list route)
+  =/  all-candidates=(list relay-descriptor)
+    (shuffle-relays (shaz (jam [eny %alt])) (eligible-relays our relays metas ship.target now %entry) health trusted)
+  =/  count=@ud  0
+  =/  acc=(list route)  ~
+  =/  excluded=(set ship)
+    =/  base=(set ship)  ?~(final-hop ~ (sy ~[ship.target]))
+    (~(uni in base) used-entries)
+  |-
+  ?:  (gte count max-alternates)  (flop acc)
+  ?~  all-candidates  (flop acc)
+  ::  skip candidates already used as entries
+  ?:  (~(has in excluded) ship.i.all-candidates)
+    $(all-candidates t.all-candidates)
+  ::  build route with this candidate as entry
+  =/  entry-hop=route-hop
+    [ship.i.all-candidates relay.i.all-candidates pub.i.all-candidates default-delay.i.all-candidates]
+  =/  mid-exclude=(set ship)  (~(put in excluded) ship.i.all-candidates)
+  ::  pick middle hops from usable/trusted relays only
+  =/  mid-pool=(list relay-descriptor)
+    (shuffle-relays (shaz (jam [eny %alt count])) (eligible-relays our relays metas ship.target now %middle) health trusted)
+  =/  mid-count=@ud  ?:((gth min-hops 0) (dec min-hops) 0)
+  =/  mid-hops=(list route-hop)  (unique-hops mid-pool mid-count mid-exclude)
+  =/  alt-hops=(list route-hop)
+    ?~  final-hop  [entry-hop mid-hops]
+    [entry-hop (snoc mid-hops u.final-hop)]
+  =/  alt-route=route  [(sham [eny target now count]) alt-hops]
+  %=  $
+    all-candidates  t.all-candidates
+    count           +(count)
+    acc             [alt-route acc]
+    excluded        (~(put in excluded) ship.i.all-candidates)
+  ==
 ::
 ++  route-last-hop
   |=  hops=(list route-hop)
@@ -585,11 +762,22 @@
   =/  padding=@  ?:(=(0 padding) 1 padding)
   (add data (lsh [3 current] padding))
 ::
+::  workstream 3: pad body and header to profile dimensions
+::
+++  pad-to-profile
+  |=  [body=payload-box header=header-box prof=cell-profile eny=@]
+  ^-  [body=payload-box header=header-box]
+  =/  body-target=@ud  (profile-body-size prof)
+  =/  header-target=@ud  (profile-header-size prof)
+  :_  (pad-atom header header-target (shaz (jam [eny %header-pad])))
+  (pad-atom body body-target (shaz (jam [eny %body-pad])))
+::
 ::  build reply block: a pre-built encrypted route back to us
 ::
 ++  build-reply-block
   |=  $:  our=ship
           relays=(map relay-id relay-descriptor)
+          metas=(map relay-id relay-meta)
           our-seed=@ux
           our-pub=@ux
           now=@da
@@ -602,7 +790,7 @@
   ^-  (unit [=reply-block token=reply-token])
   ::  select intermediate hops (route ending at us)
   =/  candidates=(list relay-descriptor)
-    (shuffle-relays eny (eligible-relays our relays our now) health trusted)
+    (shuffle-relays eny (eligible-relays our relays metas our now %middle) health trusted)
   =/  mids=(list route-hop)  (unique-hops candidates min-hops ~)
   ::  add self as final destination hop
   =/  self-hop=route-hop  [our (scot %p our) our-pub ~]
@@ -625,6 +813,7 @@
   |=  $:  app=app-id
           our=ship
           relays=(map relay-id relay-descriptor)
+          metas=(map relay-id relay-meta)
           our-seed=@ux
           our-pub=@ux
           now=@da
@@ -637,7 +826,7 @@
   ^-  (unit @ux)
   =/  rb-result
     %:  build-reply-block
-      our  relays  our-seed  our-pub  now  eny
+      our  relays  metas  our-seed  our-pub  now  eny
       min-hops  health  recent  trusted
     ==
   ?~  rb-result  ~
@@ -810,7 +999,7 @@
   ^-  relay-cell
   =/  inner=header-box  ?~(inner.layer 0x0 u.inner.layer)
   =/  cid=@uv  ?~(next-cell-id.layer cell-id.cell u.next-cell-id.layer)
-  [cid inner new-body expiry.cell]
+  [cid inner new-body expiry.cell profile.cell]
 ::
 ++  expiry-for
   |=  [opts=send-options now=@da]
@@ -896,6 +1085,7 @@
   =/  n=@ud  (lent others)
   ?:  =(n 0)  ~
   =/  target=relay-descriptor  (snag (mod (mug eny) n) others)
+  ::  workstream 3: profile auto-selected from payload in send handler
   =/  req=send-request  [%cover [%endpoint ship.target %cover] 'cover' [~ ~ ~]]
   `[%pass /cover %agent [our %skein] %poke %skein-send !>(req)]
 ::
@@ -932,10 +1122,20 @@
           adaptive-hops=?
           health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
           trusted=(set relay-id)
+          relay-metas=(map relay-id relay-meta)
           retries=(list retry-entry)
           minted-contacts=(map @uv @ux)
       ==
   ^-  json
+  ::  workstream 1: count relays by status
+  =/  status-counts=[prov=@ud usab=@ud trust=@ud]
+    %-  ~(rep by relay-metas)
+    |=  [[rid=relay-id rm=relay-meta] acc=[prov=@ud usab=@ud trust=@ud]]
+    ?-  status.rm
+      %provisional  [+(prov.acc) usab.acc trust.acc]
+      %usable       [prov.acc +(usab.acc) trust.acc]
+      %trusted      [prov.acc usab.acc +(trust.acc)]
+    ==
   %-  pairs:enjs:format
   :~  ['ship' s+(scot %p our)]
       ['apps' (numb:enjs:format ~(wyt in apps))]
@@ -952,16 +1152,19 @@
       ['adaptiveHops' b+adaptive-hops]
       ['healthyRelays' (numb:enjs:format ~(wyt by health))]
       ['trustedRelays' (numb:enjs:format ~(wyt in trusted))]
+      ['provisionalRelays' (numb:enjs:format prov.status-counts)]
+      ['usableRelays' (numb:enjs:format usab.status-counts)]
       ['pendingRetries' (numb:enjs:format (lent retries))]
       ['mintedContacts' (numb:enjs:format ~(wyt by minted-contacts))]
   ==
 ::
 ++  relays-json
-  |=  relays=(map relay-id relay-descriptor)
+  |=  [relays=(map relay-id relay-descriptor) metas=(map relay-id relay-meta)]
   ^-  json
   :-  %a
   %+  turn  ~(tap by relays)
   |=  [rid=relay-id rd=relay-descriptor]
+  =/  meta=(unit relay-meta)  (~(get by metas) rid)
   %-  pairs:enjs:format
   :~  ['relay' s+relay.rd]
       ['ship' s+(scot %p ship.rd)]
@@ -973,6 +1176,13 @@
       :-  'expiry'
       ?~  expiry.rd  ~
       s+(scot %da u.expiry.rd)
+      ::  workstream 1: provenance metadata
+      :-  'status'
+      ?~  meta  s+'provisional'
+      s+?-(status.u.meta %provisional 'provisional', %usable 'usable', %trusted 'trusted')
+      :-  'sources'
+      ?~  meta  (numb:enjs:format 0)
+      (numb:enjs:format ~(wyt in sources.u.meta))
   ==
 ::
 ++  routes-json
@@ -1030,11 +1240,12 @@
   ==
 ::
 ++  health-json
-  |=  health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+  |=  [health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)]) metas=(map relay-id relay-meta)]
   ^-  json
   :-  %a
   %+  turn  ~(tap by health)
   |=  [rid=relay-id h=[success=@ud failure=@ud last-fail=(unit @da)]]
+  =/  meta=(unit relay-meta)  (~(get by metas) rid)
   %-  pairs:enjs:format
   :~  ['relay' s+rid]
       ['success' (numb:enjs:format success.h)]
@@ -1042,6 +1253,9 @@
       :-  'lastFail'
       ?~  last-fail.h  ~
       (numb:enjs:format (div (sub u.last-fail.h ~1970.1.1) ~s1))
+      :-  'status'
+      ?~  meta  s+'unknown'
+      s+?-(status.u.meta %provisional 'provisional', %usable 'usable', %trusted 'trusted')
   ==
 ::
 ++  trusted-json
@@ -1076,7 +1290,7 @@
   =.  adaptive-hops.state  %.y
   =.  health.state   ~
   =.  trusted.state  ~
-  =.  descriptor-sources.state  ~
+  =.  relay-metas.state  ~
   =.  retries.state  ~
   =.  last-real-send.state  now.bowl
   =.  minted-contacts.state  ~
@@ -1111,23 +1325,31 @@
   =/  seed=@ux  (end [3 32] (shaz (jam [%skein-relay-seed our.bowl eny.bowl now.bowl])))
   =/  new-pub=@ux  `@ux`(puck:ed:crypto seed)
   ::
-  ?:  =(-.q.old 20)
-    =/  saved  !<(state-20 old)
+  ?:  =(-.q.old 21)
+    =/  saved  !<(state-21 old)
     =.  state  saved
     finish
-  ?:  =(-.q.old 19)
-    ::  state-19→20: clear minted-contacts (type changed to map @uv @ux),
-    ::  clear relays (descriptor type changed with sig), clear seen
-    =/  saved  !<(state-19 old)
+  ?:  =(-.q.old 20)
+    ::  state-20→21: convert descriptor-sources to relay-metas,
+    ::  clear retries (type changed with alternates), relay-cell has profile
+    =/  saved  !<(state-20 old)
+    ::  convert descriptor-sources (map relay-id ship) to relay-metas
+    =/  new-metas=(map relay-id relay-meta)
+      %-  ~(rep by descriptor-sources.saved)
+      |=  [[rid=relay-id src=ship] acc=(map relay-id relay-meta)]
+      =/  status=relay-status
+        ?:  (~(has in trusted.saved) rid)  %trusted
+        %provisional
+      (~(put by acc) rid [(sy ~[src]) now.bowl now.bowl status])
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           queues.saved
-          ~              ::  relays cleared (descriptor type changed with sig)
-          ~              ::  seen cleared
+          relays.saved
+          seen.saved
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           our-seed.saved
           our-pub.saved
           channels.saved
@@ -1137,8 +1359,36 @@
           adaptive-hops.saved
           health.saved
           trusted.saved
-          ~              ::  descriptor-sources cleared
-          retries.saved
+          new-metas            ::  relay-metas from descriptor-sources
+          ~                    ::  retries cleared (type changed)
+          last-real-send.saved
+          minted-contacts.saved
+      ==
+    finish
+  ?:  =(-.q.old 19)
+    ::  state-19→21: clear minted-contacts (type changed to map @uv @ux),
+    ::  clear relays (descriptor type changed with sig), clear seen
+    =/  saved  !<(state-19 old)
+    =.  state
+      :*  %21
+          next-id.saved
+          apps.saved
+          queues.saved
+          ~              ::  relays cleared (descriptor type changed with sig)
+          ~              ::  seen cleared
+          recent-routes.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
+          our-seed.saved
+          our-pub.saved
+          channels.saved
+          our-channels.saved
+          min-hops.saved
+          seeds.saved
+          adaptive-hops.saved
+          health.saved
+          trusted.saved
+          ~              ::  relay-metas cleared
+          ~              ::  retries cleared
           last-real-send.saved
           ~              ::  minted-contacts cleared (type changed)
       ==
@@ -1146,14 +1396,14 @@
   ?:  =(-.q.old 18)
     =/  saved  !<(state-18 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared (protocol-incompatible)
           ~              ::  relays cleared
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           channels.saved
@@ -1163,7 +1413,7 @@
           adaptive-hops.saved
           health.saved
           trusted.saved
-          ~              ::  descriptor-sources cleared
+          ~              ::  relay-metas cleared
           ~              ::  retries cleared
           last-real-send.saved
           ~              ::  minted-contacts
@@ -1172,14 +1422,14 @@
   ?:  =(-.q.old 17)
     =/  saved  !<(state-17 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared (protocol-incompatible)
           ~              ::  relays cleared (protocol-incompatible)
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           channels.saved
@@ -1189,7 +1439,7 @@
           adaptive-hops.saved
           health.saved
           trusted.saved
-          ~    ::  descriptor-sources cleared
+          ~    ::  relay-metas cleared
           ~    ::  retries cleared
           last-real-send.saved
           ~    ::  minted-contacts
@@ -1198,14 +1448,14 @@
   ?:  =(-.q.old 16)
     =/  saved  !<(state-16 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared
           ~              ::  relays cleared
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           channels.saved
@@ -1215,7 +1465,7 @@
           adaptive-hops.saved
           health.saved
           ~    ::  trusted
-          ~    ::  descriptor-sources
+          ~    ::  relay-metas
           ~    ::  retries
           now.bowl  ::  last-real-send
           ~    ::  minted-contacts
@@ -1224,14 +1474,14 @@
   ?:  =(-.q.old 15)
     =/  saved  !<(state-15 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared
           ~              ::  relays cleared
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           channels.saved
@@ -1241,7 +1491,7 @@
           adaptive-hops.saved
           health.saved
           ~    ::  trusted
-          ~    ::  descriptor-sources
+          ~    ::  relay-metas
           ~    ::  retries
           now.bowl  ::  last-real-send
           ~    ::  minted-contacts
@@ -1250,14 +1500,14 @@
   ?:  =(-.q.old 14)
     =/  saved  !<(state-14 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared
           ~              ::  relays cleared
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           channels.saved
@@ -1267,7 +1517,7 @@
           %.y
           ~    ::  health
           ~    ::  trusted
-          ~    ::  descriptor-sources
+          ~    ::  relay-metas
           ~    ::  retries
           now.bowl  ::  last-real-send
           ~    ::  minted-contacts
@@ -1276,14 +1526,14 @@
   ?:  =(-.q.old 13)
     =/  saved  !<(state-13 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared
           ~              ::  relays cleared
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           channels.saved
@@ -1293,7 +1543,7 @@
           %.y
           ~    ::  health
           ~    ::  trusted
-          ~    ::  descriptor-sources
+          ~    ::  relay-metas
           ~    ::  retries
           now.bowl  ::  last-real-send
           ~    ::  minted-contacts
@@ -1302,14 +1552,14 @@
   ?:  =(-.q.old 12)
     =/  saved  !<(state-12 old)
     =.  state
-      :*  %20
+      :*  %21
           next-id.saved
           apps.saved
           ~              ::  queues cleared
           ~              ::  relays cleared
           ~              ::  seen cleared
           recent-routes.saved
-          mix.saved
+          [~ ~]                ::  mix cleared (relay-cell type changed)
           seed
           new-pub
           ~    ::  channels
@@ -1319,14 +1569,14 @@
           %.y
           ~    ::  health
           ~    ::  trusted
-          ~    ::  descriptor-sources
+          ~    ::  relay-metas
           ~    ::  retries
           now.bowl  ::  last-real-send
           ~    ::  minted-contacts
       ==
     finish
   ::  incompatible older state — fresh start
-  =.  state  [%20 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl ~]
+  =.  state  [%21 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl ~]
   finish
   ::
   ++  finish
@@ -1343,7 +1593,7 @@
     =.  our-pub.state  `@ux`(puck:ed:crypto our-seed.state)
     ::  clear relays to purge any bad descriptors from pre-truncation inits
     =.  relays.state  ~
-    =.  descriptor-sources.state  ~
+    =.  relay-metas.state  ~
     ::  bootstrap: subscribe to seed relays to discover network
     =/  boot-cards=(list card)
       %+  murn  ~(tap in seeds.state)
@@ -1407,12 +1657,15 @@
       =/  ep=endpoint  endpoint.to.req
       =/  eff-hops=@ud
         (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
-      =/  resolved-route=(unit route)
+      =/  resolved-rset=(unit route-set)
         ?~  route.opts.req
           ?.  =(ship.ep our.bowl)
-            (select-route our.bowl ep relays.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+            (select-route our.bowl ep relays.state relay-metas.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
           ~
-        `(hydrate-route u.route.opts.req relays.state)
+        `[(hydrate-route u.route.opts.req relays.state) ~]
+      =/  resolved-route=(unit route)
+        ?~  resolved-rset  ~
+        `primary.u.resolved-rset
       =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req]
       =/  env=envelope
         [next-id.state (local-endpoint from.req our.bowl) ep now.bowl payload.req resolved-opts]
@@ -1438,6 +1691,8 @@
       =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
       =/  body-key=relay-key  (end [3 32] (shaz (jam [%skein-body eny.bowl cell-id])))
       =/  body=payload-box  (seal-body body-key env eny.bowl)
+      ::  workstream 3: auto-select profile from payload size
+      =/  prof=cell-profile  (auto-profile (met 3 body))
       ::  Fix 5: compute body, wrap, MAC, then build header with MACs
       =/  rngs=(list @ux)  (gen-rngs (lent hops.u.resolved-route) eny.bowl)
       =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs))
@@ -1447,13 +1702,22 @@
         ~&  [%skein-send %header-build-failed from.req]
         :-  [(relay-card [%dropped cell-id 'header-build-failed'])]~
         this
+      ::  workstream 3: pad body and header to profile dimensions
+      =/  padded=[body=payload-box header=header-box]
+        (pad-to-profile wrapped-body header.u.built prof eny.bowl)
       =/  cell=relay-cell
-        [cell-id header.u.built wrapped-body (expiry-for opts.req now.bowl)]
+        [cell-id header.padded body.padded (expiry-for opts.req now.bowl) prof]
       =/  selected=route-log
         [cell-id route-id.u.resolved-route ep (route-ships ep resolved-opts) now.bowl]
       =.  recent-routes.state  (trim-routes [selected recent-routes.state])
       ::  track real sends for adaptive cover traffic
       =?  last-real-send.state  !=(from.req %cover)  now.bowl
+      ::  workstream 4: store alternates in retry entry for later promotion
+      =/  alts=(list route)
+        ?~  resolved-rset  ~
+        alternates.u.resolved-rset
+      =?  retries.state  !=(~ alts)
+        [[cell i.full-route 0 (add now.bowl retry-base) alts] retries.state]
       =/  first-hop=(unit route-hop)  (route-head hops.u.resolved-route)
       =/  first-delay=(unit @dr)
         ?~  first-hop  ~
@@ -1510,12 +1774,17 @@
       ::  derive body key from reply-block token
       =/  body-key=relay-key  (end [3 32] (shaz (jam [%reply-body token.rb])))
       =/  body=payload-box  (seal-body body-key env eny.bowl)
+      ::  workstream 3: auto-select profile from payload size
+      =/  prof=cell-profile  (auto-profile (met 3 body))
       ::  wrap body with reply-block rngs (already in application order)
       =/  wrapped-body=payload-box  (onion-wrap-body body rngs.rb)
+      ::  workstream 3: pad body and header to profile dimensions
+      =/  padded=[body=payload-box header=header-box]
+        (pad-to-profile wrapped-body header.rb prof eny.bowl)
       ::  build cell using the reply-block header
       =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
       =/  cell=relay-cell
-        [cell-id header.rb wrapped-body expiry.rb]
+        [cell-id header.padded body.padded expiry.rb prof]
       ::  track real sends for adaptive cover traffic
       =?  last-real-send.state  !=(from.req %cover)  now.bowl
       =/  selected=route-log
@@ -1625,11 +1894,11 @@
     ::
         [%stats ~]
       :_  this
-      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state trusted.state retries.state minted-contacts.state))
+      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state trusted.state relay-metas.state retries.state minted-contacts.state))
     ::
         [%relays ~]
       :_  this
-      (give-json-response eyre-id (relays-json relays.state))
+      (give-json-response eyre-id (relays-json relays.state relay-metas.state))
     ::
         [%routes ~]
       :_  this
@@ -1649,7 +1918,7 @@
     ::
         [%health ~]
       :_  this
-      (give-json-response eyre-id (health-json health.state))
+      (give-json-response eyre-id (health-json health.state relay-metas.state))
     ::
         [%trusted ~]
       :_  this
@@ -1876,7 +2145,7 @@
       =/  eff-hops=@ud
         (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
       =/  result
-        (build-reply-block our.bowl relays.state our-seed.state our-pub.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+        (build-reply-block our.bowl relays.state relay-metas.state our-seed.state our-pub.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
       ?~  result
         ~&  [%skein %reply-block-build-failed %insufficient-relays]
         `this
@@ -1889,8 +2158,8 @@
         (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
       =/  result
         %:  mint-contact-bundle
-          app.act  our.bowl  relays.state  our-seed.state  our-pub.state
-          now.bowl  eny.bowl  eff-hops  health.state
+          app.act  our.bowl  relays.state  relay-metas.state  our-seed.state
+          our-pub.state  now.bowl  eny.bowl  eff-hops  health.state
           recent-routes.state  trusted.state
         ==
       ?~  result
@@ -1904,12 +2173,23 @@
     ::
         %trust-relay
       =.  trusted.state  (~(put in trusted.state) relay.act)
+      ::  workstream 1: update relay-meta status to %trusted
+      =/  cur-meta=relay-meta  (gut-relay-meta relay.act relay-metas.state now.bowl)
+      =.  relay-metas.state
+        (~(put by relay-metas.state) relay.act cur-meta(status %trusted))
       ~&  [%skein %relay-trusted relay.act]
       :-  [(relay-card [%relay-trusted relay.act])]~
       this
     ::
         %untrust-relay
       =.  trusted.state  (~(del in trusted.state) relay.act)
+      ::  workstream 1: recompute relay-meta status after untrust
+      =/  cur-meta=relay-meta  (gut-relay-meta relay.act relay-metas.state now.bowl)
+      =/  new-status=relay-status
+        ?:  (gte ~(wyt in sources.cur-meta) usable-source-threshold)  %usable
+        %provisional
+      =.  relay-metas.state
+        (~(put by relay-metas.state) relay.act cur-meta(status new-status))
       ~&  [%skein %relay-untrusted relay.act]
       :-  [(relay-card [%relay-untrusted relay.act])]~
       this
@@ -1949,7 +2229,7 @@
     =/  eff-hops=@ud
       (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
     =/  result
-      (build-reply-block our.bowl relays.state our-seed.state our-pub.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+      (build-reply-block our.bowl relays.state relay-metas.state our-seed.state our-pub.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
     ?~  result  [~ ~]
     ``noun+!>(reply-block.u.result)
   ::
@@ -2051,12 +2331,13 @@
         `this
       =/  pool=(list relay-descriptor)  p.pool-cast
       =/  source=ship  (slav %p i.t.t.wire)
-      =/  [new-rds=(list relay-descriptor) new-relays=(map relay-id relay-descriptor) new-sources=(map relay-id ship)]
-        (merge-relays our.bowl pool relays.state descriptor-sources.state source now.bowl)
+      =/  [new-rds=(list relay-descriptor) new-relays=(map relay-id relay-descriptor) new-metas=(map relay-id relay-meta)]
+        (merge-relays our.bowl pool relays.state relay-metas.state trusted.state source now.bowl)
+      ::  workstream 1: always update metas (source tracking for existing relays)
+      =.  relay-metas.state  new-metas
       ?~  new-rds  `this
       ::  we learned new relays -- update state, notify subscribers, subscribe to new ones
       =.  relays.state  new-relays
-      =.  descriptor-sources.state  new-sources
       =/  new-sub-cards=(list card)
         %+  murn  new-rds
         |=  rd=relay-descriptor
@@ -2189,13 +2470,13 @@
       |-
       ?~  rids  rr
       $(rids t.rids, rr (~(del by rr) i.rids))
-    =.  descriptor-sources.state
-      =/  ss  descriptor-sources.state
+    =.  relay-metas.state
+      =/  ss  relay-metas.state
       =/  rids  expired-rids
       |-
       ?~  rids  ss
       $(rids t.rids, ss (~(del by ss) i.rids))
-    ::  process retry queue
+    ::  process retry queue — workstream 4: promote alternate routes on retry
     =/  due=(list retry-entry)
       (skim retries.state |=(re=retry-entry (lte next-try.re now.bowl)))
     =/  not-due=(list retry-entry)
@@ -2203,14 +2484,28 @@
     =/  retry-cards=(list card)
       %+  turn  due
       |=  re=retry-entry
-      (send-cell-card target.re cell.re)
+      ::  workstream 4: if alternates available, send to alternate's first hop
+      ?~  alternates.re
+        (send-cell-card target.re cell.re)
+      =/  alt-route=route  i.alternates.re
+      ?~  hops.alt-route
+        (send-cell-card target.re cell.re)
+      (send-cell-card ship.i.hops.alt-route cell.re)
     ::  re-queue with incremented attempts, drop maxed-out entries
+    ::  workstream 4: rotate alternates — consume the first, keep the rest
     =/  requeued=(list retry-entry)
       %+  murn  due
       |=  re=retry-entry
       ?:  (gte +(attempts.re) max-retries)  ~
       =/  backoff=@dr  (mul retry-base (bex attempts.re))
-      `[cell.re target.re +(attempts.re) (add now.bowl backoff)]
+      =/  new-target=ship
+        ?~  alternates.re  target.re
+        ?~  hops.i.alternates.re  target.re
+        ship.i.hops.i.alternates.re
+      =/  new-alts=(list route)
+        ?~  alternates.re  ~
+        t.alternates.re
+      `[cell.re new-target +(attempts.re) (add now.bowl backoff) new-alts]
     =.  retries.state  (weld requeued not-due)
     ::  adaptive cover traffic: increase when quiet
     =/  quiet=?  (gth (sub now.bowl last-real-send.state) cover-quiet-threshold)
