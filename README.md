@@ -6,6 +6,8 @@ The current code is substantially stronger than the older prototype: relay descr
 
 It is still not a finished anonymity system. The right description today is "practical routed transport with some relay privacy properties", not "hardened mixnet".
 
+![screenshot](https://ams3.digitaloceanspaces.com/urbits3/sitful-hatred/2026.3.14..05.23.46..9439.5810.624d.d2f1-8791dfe7-42cf-45cd-93e1-ae1cc6ede882.png)
+
 ## Current Status
 
 Implemented in the current code:
