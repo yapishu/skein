@@ -1,8 +1,8 @@
 # %skein
 
-`%skein` is a routed transport for Urbit applications. It moves opaque app payloads through relay chains, exposes Gall marks and scries for app integration, and ships a small HTTP/UI operator surface. `../silk` uses it as its transport layer.
+`%skein` is a routed transport for Urbit applications. It moves opaque app payloads through relay chains, exposes Gall marks and scries for app integration, and ships a small HTTP/UI operator surface. [`silk`](https://github.com/yapishu/silk) is an example application that uses it as its transport layer.
 
-The current code is substantially stronger than the older prototype: relay descriptors publish a public key instead of a shared relay secret, headers are sealed per hop, the body is onion-wrapped per hop, and honest forwarding rotates both the visible `cell-id` and the body ciphertext at every hop.
+Relay descriptors publish a public key instead of a shared relay secret, headers are sealed per hop, the body is onion-wrapped per hop, and honest forwarding rotates both the visible `cell-id` and the body ciphertext at every hop.
 
 It is still not a finished anonymity system. The right description today is "practical routed transport with some relay privacy properties", not "hardened mixnet".
 
