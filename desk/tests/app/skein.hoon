@@ -14,28 +14,70 @@
   =/  opened  (cue boxed)
   (expect-eq !>(original) !>(opened))
 ::
-::  test cell-id deterministic
+::  test en/de:crub:crypto symmetric round-trip
 ::
-++  test-cell-id-deterministic
-  =/  id1  (sham [1 [~zod %app] [~fen %app] *@da])
-  =/  id2  (sham [1 [~zod %app] [~fen %app] *@da])
-  (expect-eq !>(id1) !>(id2))
+++  test-crub-symmetric-roundtrip
+  =/  key=@ux  (shaz 'test-key')
+  =/  data=@  (jam 'test-data')
+  =/  encrypted  (en:crub:crypto key data)
+  =/  decrypted  (de:crub:crypto key encrypted)
+  (expect-eq !>(`data) !>(decrypted))
 ::
-::  test cell-id varies with input
+::  test X25519 DH shared secret commutativity
 ::
-++  test-cell-id-unique
-  =/  id1  (sham [1 [~zod %app] [~fen %app] *@da])
-  =/  id2  (sham [2 [~zod %app] [~fen %app] *@da])
-  (expect-eq !>(%.n) !>(=(id1 id2)))
+++  test-x25519-dh-roundtrip
+  =/  seed-a=@ux  (end [3 32] (shaz 'alice-seed'))
+  =/  seed-b=@ux  (end [3 32] (shaz 'bob-seed'))
+  =/  pub-a=@ux   `@ux`(puck:ed:crypto seed-a)
+  =/  pub-b=@ux   `@ux`(puck:ed:crypto seed-b)
+  ::  shared secrets must match (DH commutativity)
+  =/  shared-ab=@ux  (shar:ed:crypto pub-b seed-a)
+  =/  shared-ba=@ux  (shar:ed:crypto pub-a seed-b)
+  (expect-eq !>(shared-ab) !>(shared-ba))
 ::
-::  test derive-key produces different keys for different tags
+::  test ephemeral DH seal/open round-trip
 ::
-++  test-derive-key-distinct
-  =/  base=relay-key  0xdead.beef
-  =/  cell-id=@uv  0v3
-  =/  k1=@ux  (shaz (jam ['skein-hop' base cell-id]))
-  =/  k2=@ux  (shaz (jam ['skein-body' base cell-id]))
-  (expect-eq !>(%.n) !>(=(k1 k2)))
+++  test-seal-open-roundtrip
+  =/  relay-seed=@ux  (end [3 32] (shaz 'relay-seed'))
+  =/  relay-pub=@ux   `@ux`(puck:ed:crypto relay-seed)
+  =/  data=@  (jam 'hello-skein-crypto')
+  =/  eny=@  (shaz 'test-entropy')
+  ::  seal
+  =/  eph-seed=@ux  (end [3 32] (shaz (jam [%skein-eph-seal eny data])))
+  =/  eph-pub=@ux   `@ux`(puck:ed:crypto eph-seed)
+  =/  shared=@ux    (shar:ed:crypto relay-pub eph-seed)
+  =/  sym-key=@ux   (shaz shared)
+  =/  sealed=@ux    (en:crub:crypto sym-key data)
+  =/  box=@ux       `@ux`(jam [eph-pub sealed])
+  ::  open
+  =/  raw  (cue box)
+  ?>  ?=(^ raw)
+  ?>  ?=(@ -.raw)
+  ?>  ?=(@ +.raw)
+  =/  r-shared=@ux  (shar:ed:crypto -.raw relay-seed)
+  =/  r-sym=@ux     (shaz r-shared)
+  =/  opened        (de:crub:crypto r-sym +.raw)
+  (expect-eq !>(`data) !>(opened))
+::
+::  test body onion wrap/peel round-trip
+::
+++  test-onion-body-roundtrip
+  =/  body=@ux  `@ux`(jam 'test-payload-data')
+  =/  rng1=@ux  (shaz 'rng-1')
+  =/  rng2=@ux  (shaz 'rng-2')
+  =/  rng3=@ux  (shaz 'rng-3')
+  ::  wrap: apply in order [rng3 rng2 rng1] (innermost first)
+  =/  w1=@ux  (en:crub:crypto rng3 body)
+  =/  w2=@ux  (en:crub:crypto rng2 w1)
+  =/  wrapped=@ux  (en:crub:crypto rng1 w2)
+  ::  peel: each hop peels its own layer
+  =/  p1  (de:crub:crypto rng1 wrapped)
+  ?~  p1  (expect-eq !>('peel-1-should-work') !>('failed'))
+  =/  p2  (de:crub:crypto rng2 u.p1)
+  ?~  p2  (expect-eq !>('peel-2-should-work') !>('failed'))
+  =/  p3  (de:crub:crypto rng3 u.p2)
+  ?~  p3  (expect-eq !>('peel-3-should-work') !>('failed'))
+  (expect-eq !>(body) !>(u.p3))
 ::
 ::  test seen cache pruning drops old entries
 ::
@@ -43,80 +85,18 @@
   =/  now=@da  ~2025.1.1
   =/  old=@da  (sub now ~h2)
   =/  recent=@da  (sub now ~m30)
-  =/  step1=relay-step  [0v1 ~]
-  =/  step2=relay-step  [0v2 ~]
-  =/  seen=(map relay-step @da)
-    (~(put by (~(put by *(map relay-step @da)) step1 old)) step2 recent)
+  =/  cid1=@uv  0v1
+  =/  cid2=@uv  0v2
+  =/  seen=(map @uv @da)
+    (~(put by (~(put by *(map @uv @da)) cid1 old)) cid2 recent)
   =/  cutoff=@da  (sub now ~h1)
-  =/  pruned=(map relay-step @da)
+  =/  pruned=(map @uv @da)
     %-  ~(rep by seen)
-    |=  [[step=relay-step at=@da] out=(map relay-step @da)]
+    |=  [[cid=@uv at=@da] out=(map @uv @da)]
     ?:  (lth at cutoff)  out
-    (~(put by out) step at)
+    (~(put by out) cid at)
   ;:  weld
-    (expect-eq !>(%.n) !>((~(has by pruned) step1)))
-    (expect-eq !>(%.y) !>((~(has by pruned) step2)))
-  ==
-::
-::  test en/de:crub:crypto round-trip
-::
-++  test-crub-roundtrip
-  =/  key=@ux  (shaz 'test-key')
-  =/  data=@  (jam 'test-data')
-  =/  encrypted  (en:crub:crypto key data)
-  =/  decrypted  (de:crub:crypto key encrypted)
-  (expect-eq !>(`data) !>(decrypted))
-::
-::  test header layer encrypt/decrypt round-trip
-::
-++  test-header-layer-roundtrip
-  =/  relay-key=@ux  (shaz 'relay-key-1')
-  =/  cell-id=@uv  (sham 'test-cell')
-  =/  hop-key=@ux  (shaz (jam ['skein-hop' relay-key cell-id]))
-  =/  layer=header-layer
-    [~[~zod] ~ `(shaz 'body-key') `~s5]
-  ::  encrypt the layer
-  =/  boxed=@ux  (en:crub:crypto hop-key (jam layer))
-  ::  decrypt it
-  =/  raw  (de:crub:crypto hop-key boxed)
-  ?~  raw
-    (expect-eq !>('should-decrypt') !>('failed'))
-  =/  decoded  (header-layer (cue u.raw))
-  (expect-eq !>(layer) !>(decoded))
-::
-::  test two-layer nested header (simulates 2-hop route)
-::
-++  test-nested-header
-  =/  key1=@ux  (shaz 'relay-1-key')
-  =/  key2=@ux  (shaz 'relay-2-key')
-  =/  cell-id=@uv  (sham 'cell-nested')
-  =/  hk1=@ux  (shaz (jam ['skein-hop' key1 cell-id]))
-  =/  hk2=@ux  (shaz (jam ['skein-hop' key2 cell-id]))
-  =/  body-key=@ux  (shaz 'payload-key')
-  ::  inner layer (hop 2 → destination)
-  =/  inner-layer=header-layer  [~ ~ `body-key ~]
-  =/  inner-box=@ux  (en:crub:crypto hk2 (jam inner-layer))
-  ::  outer layer (hop 1 → hop 2)
-  =/  outer-layer=header-layer  [~[~zod] `inner-box ~ `~s10]
-  =/  outer-box=@ux  (en:crub:crypto hk1 (jam outer-layer))
-  ::  peel outer
-  =/  raw1  (de:crub:crypto hk1 outer-box)
-  ?~  raw1
-    (expect-eq !>('outer-should-open') !>('failed'))
-  =/  decoded1  (header-layer (cue u.raw1))
-  ?~  inner.decoded1
-    (expect-eq !>('should-have-inner') !>('failed'))
-  ::  peel inner
-  =/  raw2  (de:crub:crypto hk2 u.inner.decoded1)
-  ?~  raw2
-    (expect-eq !>('inner-should-open') !>('failed'))
-  =/  decoded2  (header-layer (cue u.raw2))
-  ;:  weld
-    ::  outer layer has correct remaining
-    (expect-eq !>(~[~zod]) !>(remaining.decoded1))
-    ::  inner layer has body key
-    (expect-eq !>(`body-key) !>(body-key.decoded2))
-    ::  inner layer has no further inner
-    (expect-eq !>(~) !>(inner.decoded2))
+    (expect-eq !>(%.n) !>((~(has by pruned) cid1)))
+    (expect-eq !>(%.y) !>((~(has by pruned) cid2)))
   ==
 --

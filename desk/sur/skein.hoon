@@ -12,7 +12,7 @@
 +$  relay-descriptor
   $:  relay=relay-id
       ship=@p
-      key=relay-key
+      pub=@ux
       weight=@ud
       default-delay=(unit @dr)
       expiry=(unit @da)
@@ -21,7 +21,7 @@
 +$  route-hop
   $:  ship=@p
       relay=relay-id
-      key=relay-key
+      pub=@ux
       delay=(unit @dr)
   ==
 ::
@@ -40,9 +40,9 @@
 ::
 +$  reply-block
   $:  token=reply-token       ::  derive body key: (shaz (jam [%reply-body token]))
-      cell-id=@uv             ::  cell-id baked into header layers
       first-hop=ship          ::  where recipient sends the reply cell
       header=header-box       ::  pre-built onion header (route back to sender)
+      rngs=(list @ux)         ::  body onion layer keys (application order)
       expiry=(unit @da)
   ==
 ::

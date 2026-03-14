@@ -123,6 +123,7 @@ const App = {
   renderSidebar() {
     const items = [
       { id: 'dashboard', label: 'Dashboard',  icon: '\u25C9' },
+      { id: 'network',   label: 'Network',    icon: '\u2B2A' },
       { id: 'relays',    label: 'Relays',     icon: '\u2B21' },
       { id: 'routes',    label: 'Routes',     icon: '\u2192' },
       { id: 'apps',      label: 'Apps',       icon: '\u25A3' },
@@ -157,6 +158,7 @@ const App = {
     }
     switch (this.state.view) {
       case 'dashboard': return this.renderDashboard();
+      case 'network':   return this.renderNetwork();
       case 'relays':    return this.renderRelays();
       case 'routes':    return this.renderRoutes();
       case 'apps':      return this.renderApps();
@@ -268,6 +270,146 @@ const App = {
     `;
   },
 
+  // ---- network topology ----
+
+  renderNetwork() {
+    const relays = this.state.relays;
+    const routes = this.state.routes;
+    const self = this.state.stats.ship || '~zod';
+
+    // collect unique nodes: self + all relay ships + all ships from route hops
+    const nodeSet = new Set([self]);
+    relays.forEach(r => nodeSet.add(r.ship));
+    routes.forEach(r => r.hops.forEach(h => nodeSet.add(h)));
+    const nodes = Array.from(nodeSet);
+
+    // collect edges from recent routes (last 20)
+    const recentRoutes = routes.slice(0, 20);
+    const edges = [];
+    recentRoutes.forEach((r, ri) => {
+      const chain = [self, ...r.hops];
+      for (let i = 0; i < chain.length - 1; i++) {
+        edges.push({ from: chain[i], to: chain[i + 1], routeIdx: ri, hopIdx: i, total: chain.length - 1 });
+      }
+    });
+
+    // layout: arrange nodes in a circle
+    const W = 700, H = 500;
+    const cx = W / 2, cy = H / 2;
+    const radius = Math.min(W, H) * 0.35;
+    const positions = {};
+    nodes.forEach((n, i) => {
+      const angle = (2 * Math.PI * i / nodes.length) - Math.PI / 2;
+      positions[n] = { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+    });
+
+    // deduplicate edges for display, count frequency
+    const edgeKey = (a, b) => [a, b].sort().join('|');
+    const edgeFreq = {};
+    edges.forEach(e => {
+      const k = edgeKey(e.from, e.to);
+      edgeFreq[k] = (edgeFreq[k] || 0) + 1;
+    });
+
+    // build SVG edges
+    const svgEdges = Object.entries(edgeFreq).map(([key, freq]) => {
+      const [a, b] = key.split('|');
+      const pa = positions[a], pb = positions[b];
+      if (!pa || !pb) return '';
+      const opacity = Math.min(0.3 + freq * 0.15, 1);
+      const sw = Math.min(1 + freq * 0.5, 4);
+      return `
+        <line x1="${pa.x}" y1="${pa.y}" x2="${pb.x}" y2="${pb.y}"
+              stroke="var(--cyan)" stroke-width="${sw}" stroke-opacity="${opacity}" />
+        <line x1="${pa.x}" y1="${pa.y}" x2="${pb.x}" y2="${pb.y}"
+              stroke="var(--cyan)" stroke-width="${sw + 2}" stroke-opacity="0"
+              class="edge-glow" />
+      `;
+    }).join('');
+
+    // build animated packets for recent routes
+    const svgPackets = recentRoutes.slice(0, 8).map((r, ri) => {
+      const chain = [self, ...r.hops];
+      const points = chain.map(n => positions[n]).filter(Boolean);
+      if (points.length < 2) return '';
+      // build path
+      const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+      const dur = 2 + ri * 0.7;
+      const delay = ri * 0.5;
+      return `
+        <circle r="3" fill="var(--cyan)" opacity="0.9" class="packet">
+          <animateMotion dur="${dur}s" begin="${delay}s" repeatCount="indefinite" path="${d}" />
+        </circle>
+      `;
+    }).join('');
+
+    // build SVG nodes
+    const svgNodes = nodes.map(n => {
+      const p = positions[n];
+      const isSelf = n === self;
+      const r = isSelf ? 18 : 12;
+      const fill = isSelf ? 'var(--cyan-dim)' : 'var(--bg-surface)';
+      const stroke = isSelf ? 'var(--cyan)' : 'var(--border-lit)';
+      const textColor = isSelf ? 'var(--cyan)' : 'var(--text)';
+      const label = n.length > 8 ? n.slice(0, 7) + '..' : n;
+      return `
+        <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="2" class="topo-node ${isSelf ? 'topo-self' : ''}" />
+        <text x="${p.x}" y="${p.y + r + 16}" text-anchor="middle" fill="${textColor}" font-size="11" font-family="var(--font-mono)">${this.esc(label)}</text>
+      `;
+    }).join('');
+
+    return `
+      <div class="page-header">
+        <h2>Network</h2>
+        <div class="page-desc">Relay topology and active routes</div>
+      </div>
+      <div class="page-content">
+        <div class="topo-container">
+          <svg viewBox="0 0 ${W} ${H}" class="topo-svg">
+            <defs>
+              <filter id="glow">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+            </defs>
+            ${svgEdges}
+            ${svgPackets}
+            ${svgNodes}
+          </svg>
+        </div>
+        <div class="topo-legend">
+          <span class="topo-legend-item"><span class="topo-legend-dot topo-legend-self"></span> This node (${this.esc(self)})</span>
+          <span class="topo-legend-item"><span class="topo-legend-dot topo-legend-relay"></span> Relay</span>
+          <span class="topo-legend-item"><span class="topo-legend-dot topo-legend-edge"></span> Active route (${recentRoutes.length} recent)</span>
+        </div>
+        <div class="dash-panels" style="margin-top:20px;">
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">Network Stats</span></div>
+            <div class="panel-body">
+              <div class="health-row"><span class="health-label">Nodes</span><span class="health-value">${nodes.length}</span></div>
+              <div class="health-row"><span class="health-label">Relay Descriptors</span><span class="health-value">${relays.length}</span></div>
+              <div class="health-row"><span class="health-label">Routes Logged</span><span class="health-value">${routes.length}</span></div>
+              <div class="health-row"><span class="health-label">Unique Edges</span><span class="health-value">${Object.keys(edgeFreq).length}</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><span class="panel-title">Recent Activity</span></div>
+            <div class="panel-body">
+              ${recentRoutes.length ? recentRoutes.slice(0, 5).map(r => `
+                <div class="health-row">
+                  <span class="health-label mono">${this.shortId(r.cellId)}</span>
+                  <span class="health-value">
+                    <span class="hop-chain">${r.hops.map(h => `<span class="hop-node">${this.esc(h)}</span>`).join('<span class="hop-arrow">\u2192</span>')}</span>
+                  </span>
+                </div>
+              `).join('') : '<div class="empty-mini">no recent routes</div>'}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
   // ---- relays ----
 
   renderRelays() {
@@ -288,7 +430,7 @@ const App = {
                   <th>Relay ID</th>
                   <th>Ship</th>
                   <th>Weight</th>
-                  <th>Key</th>
+                  <th>Pub</th>
                   <th>Delay</th>
                   <th>Expiry</th>
                   <th></th>
@@ -300,7 +442,7 @@ const App = {
                     <td class="mono">${this.esc(r.relay)}</td>
                     <td class="mono">${this.esc(r.ship)}</td>
                     <td>${r.weight}</td>
-                    <td><span class="status-dot ${r.hasKey ? 'status-on' : 'status-off'}"></span>${r.hasKey ? 'yes' : 'none'}</td>
+                    <td><span class="status-dot ${r.hasPub ? 'status-on' : 'status-off'}"></span>${r.hasPub ? 'yes' : 'none'}</td>
                     <td>${r.delay ? r.delay + 's' : '---'}</td>
                     <td>${r.expiry ? this.fmtDate(r.expiry) : 'never'}</td>
                     <td>
