@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UI_DIR="$SCRIPT_DIR/ui"
+GLOBBER_DIR="/home/reid/gits/np/globber"
+DOCKET="$SCRIPT_DIR/desk/desk.docket-0"
+R2_BUCKET="r2:boox"
+RSYNC_DEST="np-root:/media/data/docker/volumes/sovsef-risfex-sitful-hatred/_data/sovsef-risfex-sitful-hatred/skein/"
+
+echo "==> Building UI..."
+cd "$UI_DIR"
+npm run build
+
+echo "==> Cleaning old glob..."
+cd "$GLOBBER_DIR"
+rm -f glob-*.glob
+
+echo "==> Globbing dist..."
+./glob.sh "$UI_DIR/dist"
+kill -9 $(ps aux|grep zod/.run | grep 8099 | awk -F' ' '{print $2}')
+
+echo "==> Finding new glob..."
+GLOB_FILE=$(ls glob-*.glob | head -n1)
+GLOB_HASH="${GLOB_FILE#glob-}"   # strip leading "glob-"
+GLOB_HASH="${GLOB_HASH%.glob}"   # strip trailing ".glob"
+echo "    hash: $GLOB_HASH"
+
+echo "==> Uploading to R2..."
+rclone copy "$GLOB_FILE" "$R2_BUCKET"
+
+echo "==> Updating docket..."
+sed -i -E \
+  "s|glob-http\+\['[^']+' [^]]+\]|glob-http+['https://pub-5eef062339ec4a0a8839cb95ec1a98a6.r2.dev/glob-${GLOB_HASH}.glob' ${GLOB_HASH}]|" \
+  "$DOCKET"
+
+echo "==> Verifying docket..."
+grep glob-http "$DOCKET"
+
+echo "==> Syncing desk..."
+rsync -avL "$SCRIPT_DIR/desk/" "$RSYNC_DEST"
+
+echo "==> Done!"
