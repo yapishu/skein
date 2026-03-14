@@ -18,6 +18,7 @@ If you are building an app on Urbit and you want multi-hop delivery without inve
 - exposes relay events and per-app inbox watches
 - supports channel-based peer discovery
 - builds reply blocks
+- mints contact bundles for local apps
 
 ## Quick start
 
@@ -36,21 +37,29 @@ If you are building an app on Urbit and you want multi-hop delivery without inve
 /-  *skein
 =/  req=send-request
   [ from=%echo
-    to=[ship=~sampel-palnet app=%echo]
+    to=[%endpoint [~sampel-palnet %echo]]
     payload=[%say 'hello over skein']
     opts=[route=~ reply-blocks=~ ttl=~]
   ]
 [%pass /send %agent [our %skein] %poke %skein-send !>(req)]
 ```
 
-### 3. Watch events and your app inbox
+### 3. Mint a contact bundle
+
+```hoon
+/-  *skein
+[%pass /contact %agent [our %skein] %poke %skein-admin !>([%mint-contact %echo])]
+.^(noun %gx /=skein=/x/contact/echo/noun)
+```
+
+### 4. Watch events and your app inbox
 
 ```hoon
 [%pass /relay-events %agent [our %skein] %watch /relay/events]
 [%pass /echo-inbox %agent [our %skein] %watch /app/echo/inbox]
 ```
 
-### 4. Inspect state with scries
+### 5. Inspect state with scries
 
 ```hoon
 .^(noun %gx /=skein=/x/stats/noun)
@@ -61,12 +70,13 @@ If you are building an app on Urbit and you want multi-hop delivery without inve
 ## How message delivery works
 
 1. Your app sends a `send-request` to `%skein`.
-2. `%skein` chooses a route unless you supplied one.
-3. `%skein` encrypts the message envelope under a body key.
-4. `%skein` wraps the encrypted body in one layer per hop.
-5. `%skein` builds a nested header so each relay can open only its own hop instructions.
-6. Each relay opens one header layer, peels one body layer, and forwards to the next hop.
-7. The destination `%skein` opens the final body, queues the envelope, emits an event, and pokes the target app with the payload.
+2. `%skein` either uses the direct `[%endpoint ...]` destination you supplied or decodes a `[%contact bundle]` into an endpoint plus reply-block material.
+3. `%skein` chooses a route unless the destination already came with reply-block routing material.
+4. `%skein` encrypts the message envelope under a body key.
+5. `%skein` wraps the encrypted body in one layer per hop.
+6. `%skein` builds a nested header so each relay can open only its own hop instructions.
+7. Each relay opens one header layer, peels one body layer, and forwards to the next hop.
+8. The destination `%skein` opens the final body, queues the envelope, emits an event, and pokes the target app with the payload.
 
 If the target ship is local and no remote route is needed, `%skein` delivers locally instead of building a routed cell.
 
@@ -155,6 +165,10 @@ What `%skein` does not give you:
 - signed relay discovery
 - fixed-size traffic
 - strong protection against active tagging or timing correlation
+- privacy from the local sending app when that app hands `%skein` a direct `[ship app]` endpoint
+- opaque contact bundles; a contact bundle is plain jammed `[%contact-v1 endpoint reply-block]`
+- protection against malicious seeds or Sybil relays biasing path selection
+- protection against entry-hop / exit-hop correlation by colluding relays
 
 Practical meaning:
 
@@ -162,6 +176,11 @@ Practical meaning:
 - do not describe it as a high-assurance anonymity system
 - if your app needs authenticated senders, add authentication at the app layer
 - if your app needs private peer discovery, do not rely on channels for that
+- if your app hands `%skein` a direct destination ship, that ship is known to the sender app by definition
+- if your app hands around contact bundles, any peer or app that knows the bundle format can recover the embedded endpoint
+- 3 or more hops help against ordinary relays, but they do not by themselves stop a malicious directory, a Sybil relay set, or colluding entry/exit relays from correlating traffic
+- relay cells carry a visible `cell-id` that is only used for replay detection, so an active relay can retag or clone traffic for downstream correlation
+- watched relays learn which ships subscribe to their relay pools and channels
 
 ## Interface summary
 
@@ -185,6 +204,7 @@ Practical meaning:
 - `%add-seed` / `%drop-seed`
 - `%clear-seen`
 - `%build-reply-block`
+- `%mint-contact`
 
 ### Watches
 
@@ -197,6 +217,7 @@ Practical meaning:
 
 - `/x/state`
 - `/x/app/<app>`
+- `/x/contact/<app>`
 - `/x/descriptors`
 - `/x/routes`
 - `/x/stats`

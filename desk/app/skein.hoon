@@ -181,7 +181,31 @@
       last-real-send=@da
   ==
 ::
-+$  current-state  state-18
++$  state-19
+  $:  %19
+      next-id=@ud
+      apps=(set app-id)
+      queues=(map app-id (list envelope))
+      relays=(map relay-id relay-descriptor)
+      seen=(map @uv @da)
+      recent-routes=(list route-log)
+      mix=mix-state
+      our-seed=@ux                            ::  crub private seed (never published)
+      our-pub=@ux                             ::  crub public key (published in descriptor)
+      channels=(map channel-id (map @p @da))
+      our-channels=(map channel-id app-id)
+      min-hops=@ud
+      seeds=(set @p)
+      adaptive-hops=?
+      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+      trusted=(set relay-id)
+      descriptor-sources=(map relay-id ship)
+      retries=(list retry-entry)
+      last-real-send=@da
+      minted-contacts=(map app-id @ux)
+  ==
+::
++$  current-state  state-19
 +$  card  card:agent:gall
 ::
 ::  path helpers
@@ -554,13 +578,39 @@
   ?~  hops  ~
   ::  generate reply token and derive body key
   =/  token=reply-token  `@ux`(shaz (jam [%reply-token eny now]))
-  =/  body-key=relay-key  `@ux`(shaz (jam [%reply-body token]))
+  =/  body-key=relay-key  (end [3 32] (shaz (jam [%reply-body token])))
   ::  build onion headers for the return route
   =/  built  (build-header hops body-key eny)
   ?~  built  ~
   =/  first=ship  ship.i.hops
   ::  store rngs in application order (reversed) so replier can use directly
   `[[token first header.u.built (flop rngs.u.built) (some (add now ~d1))] token]
+::
+::  mint a contact-bundle: jam([%contact-v1 endpoint reply-block])
+::
+++  mint-contact-bundle
+  |=  $:  app=app-id
+          our=ship
+          relays=(map relay-id relay-descriptor)
+          our-seed=@ux
+          our-pub=@ux
+          now=@da
+          eny=@
+          min-hops=@ud
+          health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
+          recent=(list route-log)
+          trusted=(set relay-id)
+      ==
+  ^-  (unit @ux)
+  =/  rb-result
+    %:  build-reply-block
+      our  relays  our-seed  our-pub  now  eny
+      min-hops  health  recent  trusted
+    ==
+  ?~  rb-result  ~
+  =/  ep=endpoint  [our app]
+  =/  rb=reply-block  reply-block.u.rb-result
+  ``@ux`(jam [%contact-v1 ep rb])
 ::
 ::  crypto helpers — asymmetric (NaCl box via crub)
 ::
@@ -573,7 +623,7 @@
   =/  result
     %-  mule  |.
     =/  shared=@ux    (shar:ed:crypto their-pub eph-seed)
-    =/  sym-key=@ux   (shaz shared)
+    =/  sym-key=@ux   (end [3 32] (shaz shared))
     =/  sealed=@ux    (en:crub:crypto sym-key data)
     `@ux`(jam [eph-pub sealed])
   ?:(?=(%& -.result) `p.result ~)
@@ -581,7 +631,7 @@
 ++  open-from-sealed
   |=  [box=@ux our-seed=@ux]
   ^-  (unit @)
-  ::  entire operation in mule: cue can blow up on malformed headers
+  ?:  (gth (met 3 box) 1.024)  ~
   =/  result
     %-  mule  |.
     =/  raw  (cue box)
@@ -590,7 +640,7 @@
     ?.  ?=(@ +.raw)  !!
     ?.  ?&((lte (met 3 -.raw) 32) (gte (met 3 -.raw) 31))  !!
     =/  shared=@ux  (shar:ed:crypto -.raw our-seed)
-    =/  sym-key=@ux  (shaz shared)
+    =/  sym-key=@ux  (end [3 32] (shaz shared))
     (need (de:crub:crypto sym-key +.raw))
   ?:(?=(%& -.result) `p.result ~)
 ::
@@ -622,8 +672,7 @@
   |=  [body-key=relay-key env=envelope eny=@]
   ^-  payload-box
   =/  jammed=@  (jam [id.env origin.env target.env sent-at.env payload.env opts.env])
-  =/  padded=@  (pad-atom jammed min-body-size eny)
-  (en:crub:crypto body-key padded)
+  (en:crub:crypto body-key jammed)
 ::
 ++  open-body
   |=  [body-key=relay-key box=payload-box]
@@ -649,7 +698,7 @@
     =|  acc=(list @ux)
     |-
     ?:  =(i n)  (flop acc)
-    $(i +(i), acc [(shaz (jam [%skein-rng eny i])) acc])
+    $(i +(i), acc [(end [3 32] (shaz (jam [%skein-rng eny i]))) acc])
   ::  build from inside out
   =/  rev=(list route-hop)  (flop hops)
   =/  rev-rngs=(list @ux)  (flop rngs)
@@ -667,8 +716,8 @@
   =/  rest-rngs=(list @ux)  t.rev-rngs
   =/  counter=@ud  1
   |-
-  ?~  rest  `[(pad-atom acc min-header-size eny) rngs]
-  ?~  rest-rngs  `[(pad-atom acc min-header-size eny) rngs]
+  ?~  rest  `[acc rngs]
+  ?~  rest-rngs  `[acc rngs]
   ::  generate random next-cell-id for forwarding to prev-ship
   =/  cid=@uv  `@uv`(sham [%skein-cid eny counter])
   =/  layer=header-layer
@@ -776,7 +825,7 @@
   =/  n=@ud  (lent others)
   ?:  =(n 0)  ~
   =/  target=relay-descriptor  (snag (mod (mug eny) n) others)
-  =/  req=send-request  [%cover [ship.target %cover] 'cover' [~ ~ ~]]
+  =/  req=send-request  [%cover [%endpoint ship.target %cover] 'cover' [~ ~ ~]]
   `[%pass /cover %agent [our %skein] %poke %skein-send !>(req)]
 ::
 ++  backlog-cards
@@ -813,6 +862,7 @@
           health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
           trusted=(set relay-id)
           retries=(list retry-entry)
+          minted-contacts=(map app-id @ux)
       ==
   ^-  json
   %-  pairs:enjs:format
@@ -832,6 +882,7 @@
       ['healthyRelays' (numb:enjs:format ~(wyt by health))]
       ['trustedRelays' (numb:enjs:format ~(wyt in trusted))]
       ['pendingRetries' (numb:enjs:format (lent retries))]
+      ['mintedContacts' (numb:enjs:format ~(wyt by minted-contacts))]
   ==
 ::
 ++  relays-json
@@ -957,6 +1008,7 @@
   =.  descriptor-sources.state  ~
   =.  retries.state  ~
   =.  last-real-send.state  now.bowl
+  =.  minted-contacts.state  ~
   =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
   ::  bootstrap: subscribe to seed relays to discover network
   =/  boot-cards=(list card)
@@ -988,14 +1040,40 @@
   =/  seed=@ux  (end [3 32] (shaz (jam [%skein-relay-seed our.bowl eny.bowl now.bowl])))
   =/  new-pub=@ux  `@ux`(puck:ed:crypto seed)
   ::
+  ?:  =(-.q.old 19)
+    =/  saved  !<(state-19 old)
+    =.  state  saved
+    finish
   ?:  =(-.q.old 18)
     =/  saved  !<(state-18 old)
-    =.  state  saved
+    =.  state
+      :*  %19
+          next-id.saved
+          apps.saved
+          queues.saved
+          relays.saved
+          seen.saved
+          recent-routes.saved
+          mix.saved
+          our-seed.saved
+          our-pub.saved
+          channels.saved
+          our-channels.saved
+          min-hops.saved
+          seeds.saved
+          adaptive-hops.saved
+          health.saved
+          trusted.saved
+          descriptor-sources.saved
+          retries.saved
+          last-real-send.saved
+          ~              ::  minted-contacts
+      ==
     finish
   ?:  =(-.q.old 17)
     =/  saved  !<(state-17 old)
     =.  state
-      :*  %18
+      :*  %19
           next-id.saved
           apps.saved
           ~              ::  queues cleared (protocol-incompatible)
@@ -1015,12 +1093,13 @@
           ~    ::  descriptor-sources cleared
           ~    ::  retries cleared
           last-real-send.saved
+          ~    ::  minted-contacts
       ==
     finish
   ?:  =(-.q.old 16)
     =/  saved  !<(state-16 old)
     =.  state
-      :*  %18
+      :*  %19
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1040,12 +1119,13 @@
           ~    ::  descriptor-sources
           ~    ::  retries
           now.bowl  ::  last-real-send
+          ~    ::  minted-contacts
       ==
     finish
   ?:  =(-.q.old 15)
     =/  saved  !<(state-15 old)
     =.  state
-      :*  %18
+      :*  %19
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1065,12 +1145,13 @@
           ~    ::  descriptor-sources
           ~    ::  retries
           now.bowl  ::  last-real-send
+          ~    ::  minted-contacts
       ==
     finish
   ?:  =(-.q.old 14)
     =/  saved  !<(state-14 old)
     =.  state
-      :*  %18
+      :*  %19
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1090,12 +1171,13 @@
           ~    ::  descriptor-sources
           ~    ::  retries
           now.bowl  ::  last-real-send
+          ~    ::  minted-contacts
       ==
     finish
   ?:  =(-.q.old 13)
     =/  saved  !<(state-13 old)
     =.  state
-      :*  %18
+      :*  %19
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1115,12 +1197,13 @@
           ~    ::  descriptor-sources
           ~    ::  retries
           now.bowl  ::  last-real-send
+          ~    ::  minted-contacts
       ==
     finish
   ?:  =(-.q.old 12)
     =/  saved  !<(state-12 old)
     =.  state
-      :*  %18
+      :*  %19
           next-id.saved
           apps.saved
           ~              ::  queues cleared
@@ -1140,10 +1223,11 @@
           ~    ::  descriptor-sources
           ~    ::  retries
           now.bowl  ::  last-real-send
+          ~    ::  minted-contacts
       ==
     finish
   ::  incompatible older state — fresh start
-  =.  state  [%18 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl]
+  =.  state  [%19 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl ~]
   finish
   ::
   ++  finish
@@ -1216,63 +1300,118 @@
     ?.  (~(has in apps.state) from.req)
       ~&  [%skein-send %app-not-bound from.req]
       `this
-    =/  eff-hops=@ud
-      (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
-    =/  resolved-route=(unit route)
-      ?~  route.opts.req
-        ?.  =(ship.to.req our.bowl)
-          (select-route our.bowl to.req relays.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
-        ~
-      `(hydrate-route u.route.opts.req relays.state)
-    =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req]
-    =/  env=envelope
-      [next-id.state (local-endpoint from.req our.bowl) to.req now.bowl payload.req resolved-opts]
-    =.  next-id.state  +(next-id.state)
-    ::  local loopback
-    ?:  ?&(=(ship.to.req our.bowl) ?=(~ resolved-route))
-      ~&  [%skein-send %loopback from.req app.to.req]
-      =^  cards  queues.state  (deliver-envelope our.bowl env apps.state queues.state)
-      [cards this]
-    ::  no route
-    ?~  resolved-route
-      ~&  [%skein-send %no-route from.req (scot %p ship.to.req) app.to.req]
-      :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'no-route'])]~
-      this
-    =/  full-route=(list ship)  (route-ships to.req resolved-opts)
-    =/  actual-hops=@ud  (lent hops.u.resolved-route)
-    =/  intermediate=@ud  ?:(=(actual-hops 0) 0 (dec actual-hops))
-    ~&  [%skein-send %routing from.req (scot %p ship.to.req) %via actual-hops %hops]
-    ~?  (lth intermediate eff-hops)  [%skein-send %degraded-route %wanted eff-hops %got intermediate]
-    ?~  full-route
-      :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'no-route'])]~
-      this
-    =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
-    =/  body-key=relay-key  (shaz (jam [%skein-body eny.bowl cell-id]))
-    =/  body=payload-box  (seal-body body-key env eny.bowl)
-    =/  built  (build-header hops.u.resolved-route body-key eny.bowl)
-    ?~  built
-      ~&  [%skein-send %header-build-failed from.req]
-      :-  [(relay-card [%dropped cell-id 'header-build-failed'])]~
-      this
-    =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs.u.built))
-    =/  cell=relay-cell
-      [cell-id header.u.built wrapped-body (expiry-for opts.req now.bowl)]
-    =/  selected=route-log
-      [cell-id route-id.u.resolved-route to.req (route-ships to.req resolved-opts) now.bowl]
-    =.  recent-routes.state  (trim-routes [selected recent-routes.state])
-    ::  track real sends for adaptive cover traffic
-    =?  last-real-send.state  !=(from.req %cover)  now.bowl
-    =/  first-hop=(unit route-hop)  (route-head hops.u.resolved-route)
-    =/  first-delay=(unit @dr)
-      ?~  first-hop  ~
-      delay.u.first-hop
-    =^  cards  mix.state
-      (dispatch-cell i.full-route cell first-delay mix.state now.bowl)
-    =/  base-cards=(list card)
-      :~  (relay-card [%sent cell-id to.req])
-          (relay-card [%route-selected cell-id u.resolved-route])
-      ==
-    [(weld base-cards cards) this]
+    ?-  -.to.req
+        ::
+        ::  %endpoint: normal addressed send (existing logic)
+        ::
+        %endpoint
+      =/  ep=endpoint  endpoint.to.req
+      =/  eff-hops=@ud
+        (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
+      =/  resolved-route=(unit route)
+        ?~  route.opts.req
+          ?.  =(ship.ep our.bowl)
+            (select-route our.bowl ep relays.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+          ~
+        `(hydrate-route u.route.opts.req relays.state)
+      =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req]
+      =/  env=envelope
+        [next-id.state (local-endpoint from.req our.bowl) ep now.bowl payload.req resolved-opts]
+      =.  next-id.state  +(next-id.state)
+      ::  local loopback
+      ?:  ?&(=(ship.ep our.bowl) ?=(~ resolved-route))
+        ~&  [%skein-send %loopback from.req app.ep]
+        =^  cards  queues.state  (deliver-envelope our.bowl env apps.state queues.state)
+        [cards this]
+      ::  no route
+      ?~  resolved-route
+        ~&  [%skein-send %no-route from.req (scot %p ship.ep) app.ep]
+        :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'no-route'])]~
+        this
+      =/  full-route=(list ship)  (route-ships ep resolved-opts)
+      =/  actual-hops=@ud  (lent hops.u.resolved-route)
+      =/  intermediate=@ud  ?:(=(actual-hops 0) 0 (dec actual-hops))
+      ~&  [%skein-send %routing from.req (scot %p ship.ep) %via actual-hops %hops]
+      ~?  (lth intermediate eff-hops)  [%skein-send %degraded-route %wanted eff-hops %got intermediate]
+      ?~  full-route
+        :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'no-route'])]~
+        this
+      =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
+      =/  body-key=relay-key  (end [3 32] (shaz (jam [%skein-body eny.bowl cell-id])))
+      =/  body=payload-box  (seal-body body-key env eny.bowl)
+      =/  built  (build-header hops.u.resolved-route body-key eny.bowl)
+      ?~  built
+        ~&  [%skein-send %header-build-failed from.req]
+        :-  [(relay-card [%dropped cell-id 'header-build-failed'])]~
+        this
+      =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs.u.built))
+      =/  cell=relay-cell
+        [cell-id header.u.built wrapped-body (expiry-for opts.req now.bowl)]
+      =/  selected=route-log
+        [cell-id route-id.u.resolved-route ep (route-ships ep resolved-opts) now.bowl]
+      =.  recent-routes.state  (trim-routes [selected recent-routes.state])
+      ::  track real sends for adaptive cover traffic
+      =?  last-real-send.state  !=(from.req %cover)  now.bowl
+      =/  first-hop=(unit route-hop)  (route-head hops.u.resolved-route)
+      =/  first-delay=(unit @dr)
+        ?~  first-hop  ~
+        delay.u.first-hop
+      =^  cards  mix.state
+        (dispatch-cell i.full-route cell first-delay mix.state now.bowl)
+      =/  base-cards=(list card)
+        :~  (relay-card [%sent cell-id ep])
+            (relay-card [%route-selected cell-id u.resolved-route])
+        ==
+      [(weld base-cards cards) this]
+        ::
+        ::  %contact: send via contact-bundle (reply-block-routed)
+        ::
+        %contact
+      =/  cue-result  (mule |.((cue contact-bundle.to.req)))
+      ?:  ?=(%| -.cue-result)
+        ~&  [%skein-send %contact-cue-failed from.req]
+        :-  [(relay-card [%dropped `@uv`0 'contact-cue-failed'])]~
+        this
+      =/  raw  p.cue-result
+      ::  validate structure: [%contact-v1 [ship app] [token first-hop header rngs expiry]]
+      =/  parse-result
+        %-  mule  |.
+        ?>  ?=([%contact-v1 *] raw)
+        =/  ep  (endpoint +<.raw)
+        =/  rb  (reply-block +>.raw)
+        [ep rb]
+      ?:  ?=(%| -.parse-result)
+        ~&  [%skein-send %contact-parse-failed from.req]
+        :-  [(relay-card [%dropped `@uv`0 'contact-parse-failed'])]~
+        this
+      =/  ep=endpoint  -.p.parse-result
+      =/  rb=reply-block  +.p.parse-result
+      ::  build envelope addressed to the real endpoint
+      =/  resolved-opts=send-options  [~ reply-blocks.opts.req ttl.opts.req]
+      =/  env=envelope
+        [next-id.state (local-endpoint from.req our.bowl) ep now.bowl payload.req resolved-opts]
+      =.  next-id.state  +(next-id.state)
+      ::  derive body key from reply-block token
+      =/  body-key=relay-key  (end [3 32] (shaz (jam [%reply-body token.rb])))
+      =/  body=payload-box  (seal-body body-key env eny.bowl)
+      ::  wrap body with reply-block rngs (already in application order)
+      =/  wrapped-body=payload-box  (onion-wrap-body body rngs.rb)
+      ::  build cell using the reply-block header
+      =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
+      =/  cell=relay-cell
+        [cell-id header.rb wrapped-body expiry.rb]
+      ::  track real sends for adaptive cover traffic
+      =?  last-real-send.state  !=(from.req %cover)  now.bowl
+      =/  selected=route-log
+        [cell-id `@uv`0 ep ~[first-hop.rb] now.bowl]
+      =.  recent-routes.state  (trim-routes [selected recent-routes.state])
+      =^  cards  mix.state
+        (dispatch-cell first-hop.rb cell ~ mix.state now.bowl)
+      =/  base-cards=(list card)
+        :~  (relay-card [%sent cell-id ep])
+        ==
+      [(weld base-cards cards) this]
+    ==
   ::
       %skein-cell
     =/  cell  !<(relay-cell vase)
@@ -1353,7 +1492,7 @@
     ::
         [%stats ~]
       :_  this
-      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state trusted.state retries.state))
+      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state trusted.state retries.state minted-contacts.state))
     ::
         [%relays ~]
       :_  this
@@ -1472,6 +1611,11 @@
     ::
         %'build-reply-block'
       `[%build-reply-block ~]
+    ::
+        %'mint-contact'
+      =/  app=app-id
+        ((ot:dejs:format ~[['app' so:dejs:format]]) jon)
+      `[%mint-contact app]
     ::
         %'trust-relay'
       =/  relay=relay-id
@@ -1603,6 +1747,23 @@
       :-  [(relay-card [%reply-block-built reply-block.u.result])]~
       this
     ::
+        %mint-contact
+      =/  eff-hops=@ud
+        (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
+      =/  result
+        %:  mint-contact-bundle
+          app.act  our.bowl  relays.state  our-seed.state  our-pub.state
+          now.bowl  eny.bowl  eff-hops  health.state
+          recent-routes.state  trusted.state
+        ==
+      ?~  result
+        ~&  [%skein %mint-contact-failed app.act %insufficient-relays]
+        `this
+      =.  minted-contacts.state  (~(put by minted-contacts.state) app.act u.result)
+      ~&  [%skein %contact-minted app.act]
+      :-  [(relay-card [%contact-minted app.act])]~
+      this
+    ::
         %trust-relay
       =.  trusted.state  (~(put in trusted.state) relay.act)
       ~&  [%skein %relay-trusted relay.act]
@@ -1662,6 +1823,12 @@
   ::
       [%x %seeds ~]
     ``noun+!>(seeds.state)
+  ::
+      [%x %contact @ ~]
+    =/  app=app-id  i.t.t.path
+    =/  bundle  (~(get by minted-contacts.state) app)
+    ?~  bundle  [~ ~]
+    ``noun+!>(u.bundle)
   ==
 ::
 ++  on-watch

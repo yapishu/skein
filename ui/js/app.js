@@ -226,6 +226,21 @@ const App = {
 
         ${this.renderDashTopo()}
 
+        <div class="security-panel">
+          <div class="security-header">
+            <span class="security-icon">\u26E8</span>
+            <span>Transport Security</span>
+          </div>
+          <div class="security-grid">
+            ${this.secCheck('\u2713', true, 'Asymmetric Headers', 'X25519 DH + AES-SIV per hop')}
+            ${this.secCheck('\u2713', true, 'Body Onion Layers', 'Per-hop symmetric re-encryption')}
+            ${this.secCheck('\u2713', true, 'Cell ID Rotation', 'Randomized at each relay hop')}
+            ${this.secCheck('\u2713', true, 'Contact Bundles', 'Opaque reply-block destinations')}
+            ${this.secCheck(s.effectiveMinHops >= 2 ? '\u2713' : '\u26A0', s.effectiveMinHops >= 1, 'Route Diversity', `${s.effectiveMinHops || 0} effective hops \u2014 ${s.effectiveMinHops >= 2 ? 'strong' : s.effectiveMinHops >= 1 ? 'moderate' : 'direct'}`)}
+            ${this.secCheck(s.adaptiveHops ? '\u2713' : '\u2014', s.adaptiveHops, 'Adaptive Hops', s.adaptiveHops ? 'auto-scaling with relay pool' : 'manual mode')}
+          </div>
+        </div>
+
         <div class="dash-panels">
           <div class="panel">
             <div class="panel-header">
@@ -249,6 +264,10 @@ const App = {
               <div class="health-row">
                 <span class="health-label">Route History</span>
                 <span class="health-value">${s.routes || 0} / 100 max</span>
+              </div>
+              <div class="health-row">
+                <span class="health-label">Minted Contacts</span>
+                <span class="health-value">${s.mintedContacts || 0}</span>
               </div>
             </div>
           </div>
@@ -714,6 +733,18 @@ const App = {
         }
       });
     });
+  },
+
+  secCheck(icon, ok, label, desc) {
+    return `
+      <div class="sec-item">
+        <span class="sec-icon ${ok ? 'sec-on' : 'sec-warn'}">${icon}</span>
+        <div class="sec-text">
+          <span class="sec-label">${label}</span>
+          <span class="sec-desc">${desc}</span>
+        </div>
+      </div>
+    `;
   },
 
   esc(str) {

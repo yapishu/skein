@@ -9,6 +9,13 @@
       app=app-id
   ==
 ::
++$  contact-bundle  @ux
+::
++$  destination
+  $%  [%endpoint =endpoint]
+      [%contact =contact-bundle]
+  ==
+::
 +$  relay-descriptor
   $:  relay=relay-id
       ship=@p
@@ -54,7 +61,7 @@
 ::
 +$  send-request
   $:  from=app-id
-      to=endpoint
+      to=destination
       payload=*
       opts=send-options
   ==
@@ -74,6 +81,7 @@
       [%drop-seed ship=@p]
       [%set-adaptive-hops on=?]
       [%build-reply-block ~]
+      [%mint-contact app=app-id]
       [%trust-relay relay=relay-id]
       [%untrust-relay relay=relay-id]
   ==
@@ -124,6 +132,7 @@
       [%relay-trusted relay=relay-id]
       [%relay-untrusted relay=relay-id]
       [%relay-expired relay=relay-id]
+      [%contact-minted app=app-id]
   ==
 ::
 +$  app-view
