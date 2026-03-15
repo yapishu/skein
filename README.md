@@ -1,5 +1,7 @@
 # %skein
 
+![](https://pub-5eef062339ec4a0a8839cb95ec1a98a6.r2.dev/skein.png)
+
 `%skein` is an overlay transport for Urbit apps.
 
 Instead of sending a direct ship-to-ship poke, a local app hands `%skein` an opaque payload and asks it to deliver that payload over a routed path. The app can target either a known endpoint or an opaque contact bundle. In the contact-bundle case, the caller does not need to know the destination ship at all.
