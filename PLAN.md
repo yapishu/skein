@@ -1,206 +1,54 @@
 # Skein Design Plan
 
-This plan is based on the `%skein` code that exists now (state-20). The goal is not to replace the current transport with a different system. The goal is to harden the current design by extending the pieces that are already live:
+This plan is based on the current `%skein` code (`state-24`).
 
-- Ed25519-signed relay descriptors (state-20: `merge-relays` rejects unsigned/bad-sig)
-- route health and trust scoring
-- opaque contact bundles (`contact-v2`: no endpoint/ship in bundle) and reply blocks
-- per-hop body peeling, per-hop `cell-id` reassignment, and per-hop body MAC integrity
-- per-label contact minting (`minted-contacts=(map @uv @ux)`)
-- retry, batching, and lightweight cover traffic
-- crash-safe cell and relay-pool handlers (`mule`-wrapped type casts)
+After reviewing the latest transport changes, I do not see a remaining architectural blocker in the `%skein` desk itself. The main mixnet machinery that was previously missing is now present in code:
 
-## Design direction
+- signed relay descriptors
+- relay provenance metadata and trust labels
+- profile-aware cell sizing and timing
+- route-set retries with fresh cell rebuild
+- fresh route reselection after alternate routes are exhausted
+- queued recovery when an initial send has no route
+- `intro-v1` bundles with sender-side bundle progress and exhaustion tracking
+- receiver-side consumed-entry enforcement
+- focused unit tests for bundle progression, no-route queuing, reselection, and duplicate suppression
 
-The current `%skein` is already a usable routed transport with real crypto hardening. The next version should keep the same mental model and improve three things:
+## Remaining issues
 
-1. joining the network from one known peer without giving that peer total control over the visible relay set
-2. reducing linkability from repeated contact use, timing, and size
-3. making route failure cause delay and reroute, not application-visible collapse
+- no new significant architectural vulnerability was identified in the current `%skein` review
+- the remaining gap is proof, not missing mechanism: the recent resilience work is covered mostly by unit-style tests, not multi-ship integration or churn testing
+- the project still needs evidence that a fresh node can join from a single seed, discover enough relay diversity, and keep delivering traffic while relays disappear and reappear
 
-## Workstream 1: turn descriptor provenance into routing policy
+## Workstream 1: prove single-peer bootstrap and churn recovery end to end
 
-Descriptor signatures are now live: `relay-descriptor` includes `sig=@ux` (Ed25519 of `[relay ship pub weight]` signed by the relay's own seed), and `merge-relays` rejects unsigned or bad-signature descriptors. The next change should make provenance affect route eligibility instead of being passive metadata.
+### Goal
 
-### Design change
+Demonstrate that `%skein` actually satisfies the intended join-and-recover behavior in a realistic multi-ship test environment.
 
-Add local relay metadata beside each descriptor:
+### Plan
 
-- `sources=(set ship)`
-- `first-seen=@da`
-- `last-seen=@da`
-- `status=?(%provisional %usable %trusted)`
-- `family=(unit @t)`
+1. Add an integration harness with multiple ships acting as seeds, relays, and ordinary clients.
+2. Start a fresh client with only one known seed and verify that it discovers additional relays and begins delivering contact-routed traffic.
+3. Kill entry and middle relays during active sends and verify that queued no-route recovery and reselection complete delivery without manual repair.
+4. Assert that duplicate suppression and consumed-entry handling still hold under retries and relay churn.
 
-Use the current `descriptor-sources.state`, `trusted.state`, and `health.state` as the base for this local relay view.
+## Workstream 2: soak-test bundle rotation and recovery behavior
 
-### Routing rule
+### Goal
 
-- a relay learned from only one source starts as `%provisional`
-- `%provisional` relays may be used for discovery expansion and first-hop fallback, but not as preferred middle hops
-- a relay becomes `%usable` after cross-witnessing from multiple sources or explicit operator trust
-- `%trusted` remains the manual override that already exists
+Verify that the long-lived transport lifecycle behaves correctly once the desk has been running for hours or days rather than a single request cycle.
 
-### Why this fits the current design
+### Plan
 
-- descriptor signature verification already prevents trivial forgery
-- source tracking already exists
-- route selection already has health and trust weighting
+1. Run a long-duration test that exercises bundle rotation, resend timers, reselection, and cover traffic together.
+2. Verify that exhausted intro bundles recover once fresh reply material arrives.
+3. Verify that `queued-no-route`, `reselected`, and `exhausted-reselects` counters line up with observed behavior.
+4. Prune or tighten any lifecycle state that grows unexpectedly under soak.
 
-This work mostly changes route admission rules, not the cell format.
+## Exit criteria
 
-### Migration steps
-
-1. Change `descriptor-sources` from a single source to a source set.
-2. Build a `relay-meta` map from the current discovery flow.
-3. Filter route candidates by local status before score sorting.
-4. Surface status and source count on `/x/descriptors` and the HTTP stats view.
-
-## Workstream 2: evolve contact bundles into introduction bundles
-
-Contact bundles now use the opaque `contact-v2` format: `jam([%contact-v2 app token first-hop header rngs expiry])` — no endpoint/ship in the bundle. Minting is per-label via `[%mint-contact app=app-id label=@uv]`, stored in `minted-contacts=(map @uv @ux)`, scried via `/x/contact/<label>`. The sender parses both v1 (legacy) and v2 formats. The receiver accepts dummy endpoints (`*@p`) for v2-routed cells and verifies app binding only.
-
-The next problem is reuse and linkability.
-
-### Design change
-
-Keep the current `contact-v2` format, but make a minted contact represent a small batch of single-use ingress tokens rather than one long-lived reusable ingress path.
-
-A next-step contact bundle should carry:
-
-- target app
-- bundle id
-- a small batch of ingress entries
-- per-entry expiry
-- optional reply policy hints
-
-Each ingress entry should be consumable once. A delivered message should carry fresh reply material so the conversation continues on newly issued ingress entries instead of the original introduction bundle.
-
-### Why this fits the current design
-
-- `%skein` already knows how to mint contacts
-- reply blocks are already live
-- `%silk` already rotates and republishes contact material
-
-This is an extension of the current contact and reply-block machinery, not a new addressing system.
-
-### Migration steps
-
-1. Keep current `contact-v2` support as a compatibility path.
-2. Add local bookkeeping for consumed ingress tokens.
-3. Mint contacts as short batches instead of single reusable paths.
-4. Reissue fresh reply material automatically on delivery helpers.
-
-## Workstream 3: add fixed transport profiles on top of the existing cell format
-
-The current transport already does onion wrapping and hop-local forwarding. The missing piece is disciplined size shaping.
-
-### Design change
-
-Add a small set of `cell-profile`s, for example:
-
-- `%small`
-- `%medium`
-- `%large`
-
-Each profile defines:
-
-- padded body size
-- padded header size
-- delay window defaults
-- cover eligibility
-
-Use the existing padding helper and current relay-cell construction, but pad before sealing and standardize the output to the chosen profile.
-
-### Why this fits the current design
-
-- the current `relay-cell` format can absorb a profile field without changing the routing model
-- padding support already exists in code
-- mix epochs and delays already exist
-
-### Migration steps
-
-1. Add `profile` to `relay-cell` and send options.
-2. Pad header and body to the selected profile before encryption.
-3. Choose a profile automatically from payload size unless the caller overrides it.
-4. Update cover traffic to use the same profiles as real traffic.
-
-## Workstream 4: make resilience route-set based instead of single-route based
-
-Current `%skein` chooses a route per send and retries first-hop failure. That is enough for MVP transport, but not enough for the reliability target.
-
-### Design change
-
-Keep the current route selector, but have it return a small route set:
-
-- one primary route
-- one or two alternates with different entry relays and, when possible, different relay families
-
-Send uses the primary route first. Retry promotes an alternate route instead of recomputing from scratch every time.
-
-### Why this fits the current design
-
-- route selection is already local
-- health and trust already influence route choice
-- retry queues already exist
-
-This change mostly affects send bookkeeping and retry behavior.
-
-### Migration steps
-
-1. Extend recent-route tracking from one route to a route-set view.
-2. Store alternate first hops for pending sends.
-3. Promote alternates on retry before falling back to a fresh selection.
-4. Persist healthy relay observations across restart so a reboot does not reset route quality to zero.
-
-## Workstream 5: keep channels public and add a private introduction path for apps that need it
-
-Channels are useful coordination primitives. They are also public directories.
-
-`%silk` has completed its move away from channel-based discovery: `silk-core` no longer joins `%silk-market` channel (removed from on-init, on-load sends `%leave-channel`). Peer discovery now uses relay-pool probing — silk-core periodically scries skein's descriptor list and sends `%catalog-request` to each known ship. Ships running silk-core auto-peer; others silently drop.
-
-### Design change
-
-Do not try to make channels private. Keep them as explicit membership surfaces.
-
-For privacy-sensitive apps, add a separate introduction flow built on the contact-bundle work above:
-
-- an app publishes introduction material
-- peers exchange opaque contacts through explicit introductions
-- no privacy-sensitive app relies on channel membership as a participant directory
-
-### Why this fits the current design
-
-- channel support already works and should stay simple
-- `%silk` has already completed the move away from channel-based discovery
-
-## Workstream 6: add real integration coverage
-
-The current test desk covers helper behavior. The next phase needs protocol tests.
-
-### Test additions
-
-Already testable with current code:
-
-- descriptor merge tests with mixed good and bad signatures (signed descriptors are live)
-- body MAC computation and verification round-trip tests
-- contact-v2 mint → cue round-trip (verify no endpoint leaks)
-- per-label contact minting (two labels → different bundles)
-- crash-safe cell handler (malformed cells dropped, not bail:3)
-
-Remaining (depends on future workstreams):
-
-- route admission tests for `%provisional` versus `%usable` relays
-- contact-bundle consumption and reply reissue tests
-- multi-hop forwarding tests with per-hop `cell-id` changes
-- fixed-profile padding tests
-- relay failure and retry-to-alternate-route tests
-
-## Suggested execution order
-
-1. Provenance-aware relay admission
-2. Introduction bundles built from the current contact system
-3. Fixed-size transport profiles
-4. Route-set retries and persisted relay quality
-5. Private introductions for apps that need them, while keeping channels explicitly public
-6. Integration tests for all of the above
+- a fresh node can join knowing one seed and successfully route application traffic
+- relay loss during active traffic does not cause silent permanent failure while reselection budget remains
+- intro bundles advance, exhaust, refresh, and recover correctly under repeated use
+- soak runs do not reveal unbounded state growth or retry loops

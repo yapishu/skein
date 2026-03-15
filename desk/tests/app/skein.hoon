@@ -1,102 +1,100 @@
-/-  *skein
 /+  *test
 |%
-::  sanity check
-::
-++  test-sanity
-  (expect-eq !>(2) !>((add 1 1)))
-::
-::  test jam/cue payload round-trip
-::
-++  test-payload-roundtrip
-  =/  original  'hello-skein'
-  =/  boxed  (jam original)
-  =/  opened  (cue boxed)
-  (expect-eq !>(original) !>(opened))
-::
-::  test en/de:crub:crypto symmetric round-trip
-::
-++  test-crub-symmetric-roundtrip
-  =/  key=@ux  (shaz 'test-key')
-  =/  data=@  (jam 'test-data')
-  =/  encrypted  (en:crub:crypto key data)
-  =/  decrypted  (de:crub:crypto key encrypted)
-  (expect-eq !>(`data) !>(decrypted))
-::
-::  test X25519 DH shared secret commutativity
-::
-++  test-x25519-dh-roundtrip
-  =/  seed-a=@ux  (end [3 32] (shaz 'alice-seed'))
-  =/  seed-b=@ux  (end [3 32] (shaz 'bob-seed'))
-  =/  pub-a=@ux   `@ux`(puck:ed:crypto seed-a)
-  =/  pub-b=@ux   `@ux`(puck:ed:crypto seed-b)
-  ::  shared secrets must match (DH commutativity)
-  =/  shared-ab=@ux  (shar:ed:crypto pub-b seed-a)
-  =/  shared-ba=@ux  (shar:ed:crypto pub-a seed-b)
-  (expect-eq !>(shared-ab) !>(shared-ba))
-::
-::  test ephemeral DH seal/open round-trip
-::
-++  test-seal-open-roundtrip
-  =/  relay-seed=@ux  (end [3 32] (shaz 'relay-seed'))
-  =/  relay-pub=@ux   `@ux`(puck:ed:crypto relay-seed)
-  =/  data=@  (jam 'hello-skein-crypto')
-  =/  eny=@  (shaz 'test-entropy')
-  ::  seal
-  =/  eph-seed=@ux  (end [3 32] (shaz (jam [%skein-eph-seal eny data])))
-  =/  eph-pub=@ux   `@ux`(puck:ed:crypto eph-seed)
-  =/  shared=@ux    (shar:ed:crypto relay-pub eph-seed)
-  =/  sym-key=@ux   (shaz shared)
-  =/  sealed=@ux    (en:crub:crypto sym-key data)
-  =/  box=@ux       `@ux`(jam [eph-pub sealed])
-  ::  open
-  =/  raw  (cue box)
-  ?>  ?=(^ raw)
-  ?>  ?=(@ -.raw)
-  ?>  ?=(@ +.raw)
-  =/  r-shared=@ux  (shar:ed:crypto -.raw relay-seed)
-  =/  r-sym=@ux     (shaz r-shared)
-  =/  opened        (de:crub:crypto r-sym +.raw)
-  (expect-eq !>(`data) !>(opened))
-::
-::  test body onion wrap/peel round-trip
-::
-++  test-onion-body-roundtrip
-  =/  body=@ux  `@ux`(jam 'test-payload-data')
-  =/  rng1=@ux  (shaz 'rng-1')
-  =/  rng2=@ux  (shaz 'rng-2')
-  =/  rng3=@ux  (shaz 'rng-3')
-  ::  wrap: apply in order [rng3 rng2 rng1] (innermost first)
-  =/  w1=@ux  (en:crub:crypto rng3 body)
-  =/  w2=@ux  (en:crub:crypto rng2 w1)
-  =/  wrapped=@ux  (en:crub:crypto rng1 w2)
-  ::  peel: each hop peels its own layer
-  =/  p1  (de:crub:crypto rng1 wrapped)
-  ?~  p1  (expect-eq !>('peel-1-should-work') !>('failed'))
-  =/  p2  (de:crub:crypto rng2 u.p1)
-  ?~  p2  (expect-eq !>('peel-2-should-work') !>('failed'))
-  =/  p3  (de:crub:crypto rng3 u.p2)
-  ?~  p3  (expect-eq !>('peel-3-should-work') !>('failed'))
+++  test-sanity  (expect-eq !>(2) !>((add 1 1)))
+++  test-crub
+  =/  key=@ux  (shaz 'key')
+  =/  data=@  (jam 'data')
+  (expect-eq !>(`data) !>((de:crub:crypto key (en:crub:crypto key data))))
+++  test-ed25519
+  =/  s=@ux  (end [3 32] (shaz 'ed'))
+  =/  p=@ux  `@ux`(puck:ed:crypto s)
+  =/  m=@  (jam 'hello')
+  (expect-eq !>(%.y) !>((veri:ed:crypto (sign:ed:crypto m s) m p)))
+++  test-dh
+  =/  sa=@ux  (end [3 32] (shaz 'a'))
+  =/  sb=@ux  (end [3 32] (shaz 'b'))
+  (expect-eq !>((shar:ed:crypto `@ux`(puck:ed:crypto sb) sa)) !>((shar:ed:crypto `@ux`(puck:ed:crypto sa) sb)))
+++  test-body-mac
+  =/  b=@ux  `@ux`(jam 'test')
+  (expect-eq !>(%.n) !>(=((end [3 32] (shaz b)) (end [3 32] (shaz (mix b 0x1))))))
+++  test-onion-3-layers
+  =/  body=@ux  `@ux`(jam 'payload')
+  =/  r1=@ux  (shaz 'r1')
+  =/  r2=@ux  (shaz 'r2')
+  =/  r3=@ux  (shaz 'r3')
+  =/  wrapped=@ux  (en:crub:crypto r1 (en:crub:crypto r2 (en:crub:crypto r3 body)))
+  =/  p1  (de:crub:crypto r1 wrapped)
+  ?~  p1  (expect-eq !>('fail') !>('p1'))
+  =/  p2  (de:crub:crypto r2 u.p1)
+  ?~  p2  (expect-eq !>('fail') !>('p2'))
+  =/  p3  (de:crub:crypto r3 u.p2)
+  ?~  p3  (expect-eq !>('fail') !>('p3'))
   (expect-eq !>(body) !>(u.p3))
-::
-::  test seen cache pruning drops old entries
-::
-++  test-prune-seen
+++  test-contact-v2-format
+  =/  b=@ux  `@ux`(jam [%contact-v2 %test (shaz 'tok') ~zod (shaz 'hdr') ~[(shaz 'rng')] `~2025.12.31])
+  =/  raw  (cue b)
+  ?>  ?=([%contact-v2 *] raw)
+  (expect-eq !>(%test) !>(;;(@tas +<.raw)))
+++  test-intro-v1-format
+  =/  tok1=@ux  (shaz 't1')
+  =/  tok2=@ux  (shaz 't2')
+  =/  b=@ux  `@ux`(jam [%intro-v1 %test (shaz 'bid') [[tok1 ~zod (shaz 'h') ~[(shaz 'r')] ~] [tok2 ~zod (shaz 'h') ~[(shaz 'r')] ~] ~] ~])
+  =/  raw  (cue b)
+  ?>  ?=([%intro-v1 *] raw)
+  (expect-eq !>(%test) !>(;;(@tas +<.raw)))
+++  test-descriptor-sig
+  =/  seed=@ux  (end [3 32] (shaz 'relay'))
+  =/  pub=@ux   `@ux`(puck:ed:crypto seed)
+  =/  msg=@  (jam ['~r' ~sampel-palnet pub 1])
+  (expect-eq !>(%.y) !>((veri:ed:crypto (sign:ed:crypto msg seed) msg pub)))
+++  test-descriptor-sig-bad
+  =/  seed=@ux  (end [3 32] (shaz 'relay'))
+  =/  pub=@ux   `@ux`(puck:ed:crypto seed)
+  =/  bad=@ux  (sign:ed:crypto (jam 'wrong') seed)
+  (expect-eq !>(%.n) !>((veri:ed:crypto bad (jam ['~r' ~sampel-palnet pub 1]) pub)))
+++  test-bundle-progress
+  =/  bp=(map @ux @ud)  ~
+  =/  bid=@ux  (shaz 'bid')
+  =/  i0=@ud  (~(gut by bp) bid 0)
+  =.  bp  (~(put by bp) bid +(i0))
+  =/  i1=@ud  (~(gut by bp) bid 0)
+  =.  bp  (~(put by bp) bid +(i1))
+  ;:  weld
+    (expect-eq !>(0) !>(i0))
+    (expect-eq !>(1) !>(i1))
+    (expect-eq !>(2) !>((~(gut by bp) bid 0)))
+  ==
+++  test-consumed-entry
+  =/  c=(map @ux @da)  ~
+  =/  k=@ux  (shaz 'ingress')
+  =/  a=?  (~(has by c) k)
+  =.  c  (~(put by c) k ~2025.1.1)
+  ;:  weld
+    (expect-eq !>(%.n) !>(a))
+    (expect-eq !>(%.y) !>((~(has by c) k)))
+  ==
+++  test-seen-prune
   =/  now=@da  ~2025.1.1
-  =/  old=@da  (sub now ~h2)
-  =/  recent=@da  (sub now ~m30)
-  =/  cid1=@uv  0v1
-  =/  cid2=@uv  0v2
   =/  seen=(map @uv @da)
-    (~(put by (~(put by *(map @uv @da)) cid1 old)) cid2 recent)
+    (~(put by (~(put by *(map @uv @da)) 0v1 (sub now ~h2))) 0v2 (sub now ~m30))
   =/  cutoff=@da  (sub now ~h1)
   =/  pruned=(map @uv @da)
     %-  ~(rep by seen)
     |=  [[cid=@uv at=@da] out=(map @uv @da)]
-    ?:  (lth at cutoff)  out
-    (~(put by out) cid at)
+    ?:((lth at cutoff) out (~(put by out) cid at))
   ;:  weld
-    (expect-eq !>(%.n) !>((~(has by pruned) cid1)))
-    (expect-eq !>(%.y) !>((~(has by pruned) cid2)))
+    (expect-eq !>(%.n) !>((~(has by pruned) 0v1)))
+    (expect-eq !>(%.y) !>((~(has by pruned) 0v2)))
+  ==
+++  test-auto-profile
+  =/  auto
+    |=  s=@ud
+    ^-  ?(%small %medium %large)
+    ?:((lte s 8.192) %small ?:((lte s 32.768) %medium %large))
+  ;:  weld
+    (expect-eq !>(%small) !>((auto 100)))
+    (expect-eq !>(%small) !>((auto 8.192)))
+    (expect-eq !>(%medium) !>((auto 8.193)))
+    (expect-eq !>(%large) !>((auto 32.769)))
   ==
 --

@@ -21,6 +21,19 @@
 ++  cover-quiet-threshold  ~m2  ::  send extra cover if no real sends for this long
 ++  usable-source-threshold  2  ::  sources needed before relay becomes %usable
 ++  max-alternates  2           ::  max alternate routes in route-set
+++  default-max-reselects  2   ::  ws2: fresh route selections after alternates exhausted
+++  intro-batch-size  4        ::  ws1: entries per introduction bundle
+::
+::  ws4: profile-aligned delay windows
+::
+++  profile-delay
+  |=  p=cell-profile
+  ^-  (unit @dr)
+  ?-  p
+    %small   `~s5
+    %medium  `~s15
+    %large   `~s30
+  ==
 ::
 ::  workstream 3: cell profile dimensions (bytes)
 ::
@@ -57,11 +70,13 @@
   ==
 ::
 +$  retry-entry
-  $:  cell=relay-cell
-      target=ship
+  $:  env=envelope
+      body-key=relay-key
+      prof=cell-profile
+      routes=(list route)      ::  remaining routes to try (head = next)
       attempts=@ud
       next-try=@da
-      alternates=(list route)  ::  workstream 4: alternate routes for retry
+      max-reselects=@ud        ::  ws2: budget for fresh route selections
   ==
 ::
 +$  mix-state
@@ -69,202 +84,9 @@
       timer=(unit @da)
   ==
 ::
-::  state-12: blind routing — no cleartext origin/target/route in cells
-::  states 0-11 dropped (incompatible types); fresh start on upgrade
 ::
-+$  state-12
-  $:  %12
-      next-id=@ud
-      apps=(set app-id)
-      queues=*
-      relays=*
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-key=relay-key
-  ==
-::
-::  state-13: adds channel-based peer discovery
-::
-+$  state-13
-  $:  %13
-      next-id=@ud
-      apps=(set app-id)
-      queues=*
-      relays=*
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-key=relay-key
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-  ==
-::
-::  state-14: configurable min-hops
-::
-+$  state-14
-  $:  %14
-      next-id=@ud
-      apps=(set app-id)
-      queues=*
-      relays=*
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-key=relay-key
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-  ==
-::
-::
-::  state-15: multiple bootstrap seeds, adaptive hops, relay health
-::
-+$  state-15
-  $:  %15
-      next-id=@ud
-      apps=(set app-id)
-      queues=*
-      relays=*
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-key=relay-key
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-      seeds=(set @p)
-      adaptive-hops=?
-      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
-  ==
-::
-::
-::  state-16: reply-token storage for reply blocks
-::
-+$  state-16
-  $:  %16
-      next-id=@ud
-      apps=(set app-id)
-      queues=*
-      relays=*
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-key=relay-key
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-      seeds=(set @p)
-      adaptive-hops=?
-      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
-      reply-tokens=(map @uv reply-token)
-  ==
-::
-::
-::  state-17: discovery trust, reliability, cover refinement
-::
-+$  state-17
-  $:  %17
-      next-id=@ud
-      apps=(set app-id)
-      queues=*                                ::  type changed (reply-block)
-      relays=*                                ::  type changed (relay-descriptor)
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-key=relay-key
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-      seeds=(set @p)
-      adaptive-hops=?
-      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
-      reply-tokens=(map @uv reply-token)
-      trusted=(set relay-id)
-      descriptor-sources=*                    ::  type changed (relay-id refs relay-descriptor)
-      retries=*                               ::  protocol-incompatible
-      last-real-send=@da
-  ==
-::
-::  state-18: asymmetric crypto, per-hop cell-id, body onion
-::
-+$  state-18
-  $:  %18
-      next-id=@ud
-      apps=(set app-id)
-      queues=(map app-id (list envelope))
-      relays=*                                ::  opaque — cleared on upgrade
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-seed=@ux                            ::  crub private seed (never published)
-      our-pub=@ux                             ::  crub public key (published in descriptor)
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-      seeds=(set @p)
-      adaptive-hops=?
-      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
-      trusted=(set relay-id)
-      descriptor-sources=(map relay-id ship)
-      retries=*                               ::  opaque (type changed)
-      last-real-send=@da
-  ==
-::
-+$  state-19
-  $:  %19
-      next-id=@ud
-      apps=(set app-id)
-      queues=(map app-id (list envelope))
-      relays=*                                ::  opaque — cleared on upgrade (type changed)
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                   ::  opaque (relay-cell type changed)
-      our-seed=@ux                            ::  crub private seed (never published)
-      our-pub=@ux                             ::  crub public key (published in descriptor)
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-      seeds=(set @p)
-      adaptive-hops=?
-      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
-      trusted=(set relay-id)
-      descriptor-sources=(map relay-id ship)
-      retries=*                               ::  opaque (type changed)
-      last-real-send=@da
-      minted-contacts=*                       ::  opaque — cleared on upgrade (type changed)
-  ==
-::
-::
-+$  state-20
-  $:  %20
-      next-id=@ud
-      apps=(set app-id)
-      queues=(map app-id (list envelope))
-      relays=(map relay-id relay-descriptor)
-      seen=(map @uv @da)
-      recent-routes=(list route-log)
-      mix=*                                     ::  opaque (relay-cell type changed)
-      our-seed=@ux
-      our-pub=@ux
-      channels=(map channel-id (map @p @da))
-      our-channels=(map channel-id app-id)
-      min-hops=@ud
-      seeds=(set @p)
-      adaptive-hops=?
-      health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
-      trusted=(set relay-id)
-      descriptor-sources=(map relay-id ship)
-      retries=*                                 ::  opaque (type changed)
-      last-real-send=@da
-      minted-contacts=(map @uv @ux)   ::  Fix 2: keyed by label, not app-id
-  ==
-::
-::
-::  state-21: provenance-aware relay metadata, cell profiles, route-set retries
-::
-+$  state-21
-  $:  %21
++$  state-0
+  $:  %0
       next-id=@ud
       apps=(set app-id)
       queues=(map app-id (list envelope))
@@ -281,13 +103,20 @@
       adaptive-hops=?
       health=(map relay-id [success=@ud failure=@ud last-fail=(unit @da)])
       trusted=(set relay-id)
-      relay-metas=(map relay-id relay-meta)    ::  workstream 1: provenance metadata
+      relay-metas=(map relay-id relay-meta)
       retries=(list retry-entry)
       last-real-send=@da
       minted-contacts=(map @uv @ux)
+      consumed-entries=(map @ux @da)
+      profile-counts=[small=@ud medium=@ud large=@ud]
+      bundle-progress=(map @ux @ud)
+      exhausted-bundles=(set @ux)
+      queued-no-route=@ud
+      reselected=@ud
+      exhausted-reselects=@ud
   ==
 ::
-+$  current-state  state-21
++$  current-state  state-0
 +$  card  card:agent:gall
 ::
 ::  path helpers
@@ -408,14 +237,14 @@
       =/  new-status=relay-status
         (compute-relay-status relay.i.pool new-sources trusted)
       =/  upd=relay-meta
-        [new-sources first-seen.cur-meta now new-status]
+        [new-sources first-seen.cur-meta now new-status family.cur-meta]
       =.  metas  (~(put by metas) relay.i.pool upd)
       $(pool t.pool)
     $(pool t.pool)
   ::  new relay — initialize metadata
   =/  init-status=relay-status
     (compute-relay-status relay.i.pool (sy ~[source]) trusted)
-  =/  meta=relay-meta  [(sy ~[source]) now now init-status]
+  =/  meta=relay-meta  [(sy ~[source]) now now init-status ~]
   =.  relays   (~(put by relays) relay.i.pool i.pool)
   =.  metas    (~(put by metas) relay.i.pool meta)
   =.  ships    (~(put in ships) ship.i.pool)
@@ -435,8 +264,29 @@
   |=  [rid=relay-id metas=(map relay-id relay-meta) now=@da]
   ^-  relay-meta
   =/  existing  (~(get by metas) rid)
-  ?~  existing  [~ now now %provisional]
+  ?~  existing  [~ now now %provisional ~]
   u.existing
+::
+::  ws3: get relay family from metadata
+::
+++  relay-family
+  |=  [rid=relay-id metas=(map relay-id relay-meta)]
+  ^-  (unit @t)
+  =/  meta  (~(get by metas) rid)
+  ?~  meta  ~
+  family.u.meta
+::
+::  ws3: get families used in a set of relays
+::
+++  used-families
+  |=  [ships=(set ship) relays=(map relay-id relay-descriptor) metas=(map relay-id relay-meta)]
+  ^-  (set @t)
+  %-  ~(rep by relays)
+  |=  [[rid=relay-id rd=relay-descriptor] out=(set @t)]
+  ?.  (~(has in ships) ship.rd)  out
+  =/  fam  (relay-family relay.rd metas)
+  ?~  fam  out
+  (~(put in out) u.fam)
 ::
 ++  discovery-sub-cards
   |=  [our=ship relays=(map relay-id relay-descriptor) wex=(map [wire ship term] [acked=? =path])]
@@ -683,6 +533,7 @@
   `[primary alts]
 ::
 ::  workstream 4: build alternate routes with different entry relays
+::  ws3: avoid primary route's family, not just its entry ship
 ::
 ++  build-alternates
   |=  $:  our=ship
@@ -705,11 +556,18 @@
   =/  excluded=(set ship)
     =/  base=(set ship)  ?~(final-hop ~ (sy ~[ship.target]))
     (~(uni in base) used-entries)
+  ::  ws3: collect families of excluded entry relays
+  =/  excluded-families=(set @t)
+    (used-families used-entries relays metas)
   |-
   ?:  (gte count max-alternates)  (flop acc)
   ?~  all-candidates  (flop acc)
   ::  skip candidates already used as entries
   ?:  (~(has in excluded) ship.i.all-candidates)
+    $(all-candidates t.all-candidates)
+  ::  ws3: skip candidates in same family as primary entry
+  =/  cand-fam  (relay-family relay.i.all-candidates metas)
+  ?:  ?&(?=(^ cand-fam) (~(has in excluded-families) u.cand-fam))
     $(all-candidates t.all-candidates)
   ::  build route with this candidate as entry
   =/  entry-hop=route-hop
@@ -724,11 +582,16 @@
     ?~  final-hop  [entry-hop mid-hops]
     [entry-hop (snoc mid-hops u.final-hop)]
   =/  alt-route=route  [(sham [eny target now count]) alt-hops]
+  ::  ws3: track family of this alternate's entry too
+  =/  new-excluded-families=(set @t)
+    ?~  cand-fam  excluded-families
+    (~(put in excluded-families) u.cand-fam)
   %=  $
-    all-candidates  t.all-candidates
-    count           +(count)
-    acc             [alt-route acc]
-    excluded        (~(put in excluded) ship.i.all-candidates)
+    all-candidates    t.all-candidates
+    count             +(count)
+    acc               [alt-route acc]
+    excluded          (~(put in excluded) ship.i.all-candidates)
+    excluded-families  new-excluded-families
   ==
 ::
 ++  route-last-hop
@@ -771,6 +634,26 @@
   =/  header-target=@ud  (profile-header-size prof)
   :_  (pad-atom header header-target (shaz (jam [eny %header-pad])))
   (pad-atom body body-target (shaz (jam [eny %body-pad])))
+::
+::  build a complete relay-cell for a given route from envelope + body-key
+::  returns ~ if header build fails or route has no hops
+::
+++  build-cell-for-route
+  |=  [env=envelope body-key=relay-key rte=route prof=cell-profile eny=@ now=@da]
+  ^-  (unit [cell=relay-cell first-hop=ship])
+  ?~  hops.rte  ~
+  =/  body=payload-box  (seal-body body-key env eny)
+  =/  rngs=(list @ux)  (gen-rngs (lent hops.rte) eny)
+  =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs))
+  =/  macs=(list (unit @ux))  (compute-body-macs wrapped-body rngs)
+  =/  built  (build-header hops.rte body-key eny macs)
+  ?~  built  ~
+  =/  padded=[body=payload-box header=header-box]
+    (pad-to-profile wrapped-body header.u.built prof eny)
+  =/  cell-id=@uv  `@uv`(sham [eny id.env route-id.rte])
+  =/  cell=relay-cell
+    [cell-id header.padded body.padded (expiry-for opts.env now) prof]
+  `[cell ship.i.hops.rte]
 ::
 ::  build reply block: a pre-built encrypted route back to us
 ::
@@ -824,14 +707,38 @@
           trusted=(set relay-id)
       ==
   ^-  (unit @ux)
+  ::  ws1: mint as introduction bundle (batch of entries)
+  =/  bundle-id=@ux  `@ux`(shaz (jam [%intro-bundle-id eny now app]))
+  =/  count=@ud  0
+  =/  entries=(list intro-entry)  ~
+  |-
+  ?:  =(count intro-batch-size)
+    ?~  entries  ~
+    =/  ib=intro-bundle  [app bundle-id (flop entries) ~]
+    ``@ux`(jam [%intro-v1 app.ib bundle-id.ib entries.ib reply-policy.ib])
+  =/  entry-eny=@  (shaz (jam [%intro-entry eny count]))
   =/  rb-result
     %:  build-reply-block
-      our  relays  metas  our-seed  our-pub  now  eny
+      our  relays  metas  our-seed  our-pub  now  entry-eny
       min-hops  health  recent  trusted
     ==
-  ?~  rb-result  ~
+  ?~  rb-result
+    ::  if we can't build even one entry, fall back to contact-v2
+    ?~  entries
+      =/  rb2
+        %:  build-reply-block
+          our  relays  metas  our-seed  our-pub  now  eny
+          min-hops  health  recent  trusted
+        ==
+      ?~  rb2  ~
+      =/  rb=reply-block  reply-block.u.rb2
+      ``@ux`(jam [%contact-v2 app token.rb first-hop.rb header.rb rngs.rb expiry.rb])
+    ::  return what we have so far
+    =/  ib=intro-bundle  [app bundle-id (flop entries) ~]
+    ``@ux`(jam [%intro-v1 app.ib bundle-id.ib entries.ib reply-policy.ib])
   =/  rb=reply-block  reply-block.u.rb-result
-  ``@ux`(jam [%contact-v2 app token.rb first-hop.rb header.rb rngs.rb expiry.rb])
+  =/  entry=intro-entry  [token.rb first-hop.rb header.rb rngs.rb expiry.rb]
+  $(count +(count), entries [entry entries])
 ::
 ::  crypto helpers — asymmetric (NaCl box via crub)
 ::
@@ -1085,8 +992,13 @@
   =/  n=@ud  (lent others)
   ?:  =(n 0)  ~
   =/  target=relay-descriptor  (snag (mod (mug eny) n) others)
-  ::  workstream 3: profile auto-selected from payload in send handler
-  =/  req=send-request  [%cover [%endpoint ship.target %cover] 'cover' [~ ~ ~]]
+  ::  ws4: pick a profile for cover traffic, weighted toward %small
+  =/  roll=@ud  (mod (mug (shaz (jam [eny %cover-profile]))) 10)
+  =/  cover-profile=cell-profile
+    ?:  (lth roll 6)  %small     ::  60% small
+    ?:  (lth roll 9)  %medium    ::  30% medium
+    %large                       ::  10% large
+  =/  req=send-request  [%cover [%endpoint ship.target %cover] 'cover' [~ ~ ~ `cover-profile]]
   `[%pass /cover %agent [our %skein] %poke %skein-send !>(req)]
 ::
 ++  backlog-cards
@@ -1125,6 +1037,12 @@
           relay-metas=(map relay-id relay-meta)
           retries=(list retry-entry)
           minted-contacts=(map @uv @ux)
+          profile-counts=[small=@ud medium=@ud large=@ud]
+          bundle-progress=(map @ux @ud)
+          exhausted-bundles=(set @ux)
+          queued-no-route=@ud
+          reselected=@ud
+          exhausted-reselects=@ud
       ==
   ^-  json
   ::  workstream 1: count relays by status
@@ -1156,6 +1074,16 @@
       ['usableRelays' (numb:enjs:format usab.status-counts)]
       ['pendingRetries' (numb:enjs:format (lent retries))]
       ['mintedContacts' (numb:enjs:format ~(wyt by minted-contacts))]
+      ::  ws4: profile distribution counters
+      ['sentSmall' (numb:enjs:format small.profile-counts)]
+      ['sentMedium' (numb:enjs:format medium.profile-counts)]
+      ['sentLarge' (numb:enjs:format large.profile-counts)]
+      ::  ws1/ws2/ws3: bundle lifecycle and no-route counters
+      ['bundleProgress' (numb:enjs:format ~(wyt by bundle-progress))]
+      ['exhaustedBundles' (numb:enjs:format ~(wyt in exhausted-bundles))]
+      ['queuedNoRoute' (numb:enjs:format queued-no-route)]
+      ['reselected' (numb:enjs:format reselected)]
+      ['exhaustedReselects' (numb:enjs:format exhausted-reselects)]
   ==
 ::
 ++  relays-json
@@ -1183,6 +1111,11 @@
       :-  'sources'
       ?~  meta  (numb:enjs:format 0)
       (numb:enjs:format ~(wyt in sources.u.meta))
+      ::  ws3: operator family
+      :-  'family'
+      ?~  meta  ~
+      ?~  family.u.meta  ~
+      s+u.family.u.meta
   ==
 ::
 ++  routes-json
@@ -1294,6 +1227,13 @@
   =.  retries.state  ~
   =.  last-real-send.state  now.bowl
   =.  minted-contacts.state  ~
+  =.  consumed-entries.state  ~
+  =.  profile-counts.state  [0 0 0]
+  =.  bundle-progress.state  ~
+  =.  exhausted-bundles.state  ~
+  =.  queued-no-route.state  0
+  =.  reselected.state  0
+  =.  exhausted-reselects.state  0
   =^  timer-cards  mix.state  (ensure-epoch-timer mix.state now.bowl)
   ::  bootstrap: subscribe to seed relays to discover network
   =/  boot-cards=(list card)
@@ -1321,262 +1261,7 @@
   |=  old=vase
   ^-  (quip card _this)
   |^
-  ::  generate fresh keypair for all migrations (breaking protocol change)
-  =/  seed=@ux  (end [3 32] (shaz (jam [%skein-relay-seed our.bowl eny.bowl now.bowl])))
-  =/  new-pub=@ux  `@ux`(puck:ed:crypto seed)
-  ::
-  ?:  =(-.q.old 21)
-    =/  saved  !<(state-21 old)
-    =.  state  saved
-    finish
-  ?:  =(-.q.old 20)
-    ::  state-20→21: convert descriptor-sources to relay-metas,
-    ::  clear retries (type changed with alternates), relay-cell has profile
-    =/  saved  !<(state-20 old)
-    ::  convert descriptor-sources (map relay-id ship) to relay-metas
-    =/  new-metas=(map relay-id relay-meta)
-      %-  ~(rep by descriptor-sources.saved)
-      |=  [[rid=relay-id src=ship] acc=(map relay-id relay-meta)]
-      =/  status=relay-status
-        ?:  (~(has in trusted.saved) rid)  %trusted
-        %provisional
-      (~(put by acc) rid [(sy ~[src]) now.bowl now.bowl status])
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          queues.saved
-          relays.saved
-          seen.saved
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          our-seed.saved
-          our-pub.saved
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          seeds.saved
-          adaptive-hops.saved
-          health.saved
-          trusted.saved
-          new-metas            ::  relay-metas from descriptor-sources
-          ~                    ::  retries cleared (type changed)
-          last-real-send.saved
-          minted-contacts.saved
-      ==
-    finish
-  ?:  =(-.q.old 19)
-    ::  state-19→21: clear minted-contacts (type changed to map @uv @ux),
-    ::  clear relays (descriptor type changed with sig), clear seen
-    =/  saved  !<(state-19 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          queues.saved
-          ~              ::  relays cleared (descriptor type changed with sig)
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          our-seed.saved
-          our-pub.saved
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          seeds.saved
-          adaptive-hops.saved
-          health.saved
-          trusted.saved
-          ~              ::  relay-metas cleared
-          ~              ::  retries cleared
-          last-real-send.saved
-          ~              ::  minted-contacts cleared (type changed)
-      ==
-    finish
-  ?:  =(-.q.old 18)
-    =/  saved  !<(state-18 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared (protocol-incompatible)
-          ~              ::  relays cleared
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          seeds.saved
-          adaptive-hops.saved
-          health.saved
-          trusted.saved
-          ~              ::  relay-metas cleared
-          ~              ::  retries cleared
-          last-real-send.saved
-          ~              ::  minted-contacts
-      ==
-    finish
-  ?:  =(-.q.old 17)
-    =/  saved  !<(state-17 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared (protocol-incompatible)
-          ~              ::  relays cleared (protocol-incompatible)
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          seeds.saved
-          adaptive-hops.saved
-          health.saved
-          trusted.saved
-          ~    ::  relay-metas cleared
-          ~    ::  retries cleared
-          last-real-send.saved
-          ~    ::  minted-contacts
-      ==
-    finish
-  ?:  =(-.q.old 16)
-    =/  saved  !<(state-16 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared
-          ~              ::  relays cleared
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          seeds.saved
-          adaptive-hops.saved
-          health.saved
-          ~    ::  trusted
-          ~    ::  relay-metas
-          ~    ::  retries
-          now.bowl  ::  last-real-send
-          ~    ::  minted-contacts
-      ==
-    finish
-  ?:  =(-.q.old 15)
-    =/  saved  !<(state-15 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared
-          ~              ::  relays cleared
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          seeds.saved
-          adaptive-hops.saved
-          health.saved
-          ~    ::  trusted
-          ~    ::  relay-metas
-          ~    ::  retries
-          now.bowl  ::  last-real-send
-          ~    ::  minted-contacts
-      ==
-    finish
-  ?:  =(-.q.old 14)
-    =/  saved  !<(state-14 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared
-          ~              ::  relays cleared
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          channels.saved
-          our-channels.saved
-          min-hops.saved
-          default-seeds
-          %.y
-          ~    ::  health
-          ~    ::  trusted
-          ~    ::  relay-metas
-          ~    ::  retries
-          now.bowl  ::  last-real-send
-          ~    ::  minted-contacts
-      ==
-    finish
-  ?:  =(-.q.old 13)
-    =/  saved  !<(state-13 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared
-          ~              ::  relays cleared
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          channels.saved
-          our-channels.saved
-          default-min-hops
-          default-seeds
-          %.y
-          ~    ::  health
-          ~    ::  trusted
-          ~    ::  relay-metas
-          ~    ::  retries
-          now.bowl  ::  last-real-send
-          ~    ::  minted-contacts
-      ==
-    finish
-  ?:  =(-.q.old 12)
-    =/  saved  !<(state-12 old)
-    =.  state
-      :*  %21
-          next-id.saved
-          apps.saved
-          ~              ::  queues cleared
-          ~              ::  relays cleared
-          ~              ::  seen cleared
-          recent-routes.saved
-          [~ ~]                ::  mix cleared (relay-cell type changed)
-          seed
-          new-pub
-          ~    ::  channels
-          ~    ::  our-channels
-          default-min-hops
-          default-seeds
-          %.y
-          ~    ::  health
-          ~    ::  trusted
-          ~    ::  relay-metas
-          ~    ::  retries
-          now.bowl  ::  last-real-send
-          ~    ::  minted-contacts
-      ==
-    finish
-  ::  incompatible older state — fresh start
-  =.  state  [%21 1 (sy ~[%cover]) ~ ~ ~ ~ [~ ~] seed new-pub ~ ~ default-min-hops default-seeds %.y ~ ~ ~ ~ now.bowl ~]
+  =.  state  !<(state-0 old)
   finish
   ::
   ++  finish
@@ -1666,7 +1351,7 @@
       =/  resolved-route=(unit route)
         ?~  resolved-rset  ~
         `primary.u.resolved-rset
-      =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req]
+      =/  resolved-opts=send-options  [resolved-route reply-blocks.opts.req ttl.opts.req profile.opts.req]
       =/  env=envelope
         [next-id.state (local-endpoint from.req our.bowl) ep now.bowl payload.req resolved-opts]
       =.  next-id.state  +(next-id.state)
@@ -1675,11 +1360,15 @@
         ~&  [%skein-send %loopback from.req app.ep]
         =^  cards  queues.state  (deliver-envelope our.bowl env apps.state queues.state)
         [cards this]
-      ::  no route
+      ::  no route — ws2: queue for later reselection instead of dropping
       ?~  resolved-route
-        ~&  [%skein-send %no-route from.req (scot %p ship.ep) app.ep]
-        :-  [(relay-card [%dropped (cell-id-for id.env origin.env target.env sent-at.env) 'no-route'])]~
-        this
+        ~&  [%skein-send %no-route-queued from.req (scot %p ship.ep) app.ep]
+        =/  prof=cell-profile  (auto-profile (met 3 (jam payload.req)))
+        =/  body-key=relay-key  (end [3 32] (shaz (jam [%skein-body eny.bowl id.env])))
+        =.  retries.state
+          [[env body-key prof ~ 0 (add now.bowl retry-base) default-max-reselects] retries.state]
+        =.  queued-no-route.state  +(queued-no-route.state)
+        `this
       =/  full-route=(list ship)  (route-ships ep resolved-opts)
       =/  actual-hops=@ud  (lent hops.u.resolved-route)
       =/  intermediate=@ud  ?:(=(actual-hops 0) 0 (dec actual-hops))
@@ -1691,8 +1380,10 @@
       =/  cell-id=@uv  `@uv`(sham [eny.bowl now.bowl next-id.state])
       =/  body-key=relay-key  (end [3 32] (shaz (jam [%skein-body eny.bowl cell-id])))
       =/  body=payload-box  (seal-body body-key env eny.bowl)
-      ::  workstream 3: auto-select profile from payload size
-      =/  prof=cell-profile  (auto-profile (met 3 body))
+      ::  ws4: use caller profile override if provided, else auto-select
+      =/  prof=cell-profile
+        ?^  profile.opts.req  u.profile.opts.req
+        (auto-profile (met 3 body))
       ::  Fix 5: compute body, wrap, MAC, then build header with MACs
       =/  rngs=(list @ux)  (gen-rngs (lent hops.u.resolved-route) eny.bowl)
       =/  wrapped-body=payload-box  (onion-wrap-body body (flop rngs))
@@ -1712,16 +1403,25 @@
       =.  recent-routes.state  (trim-routes [selected recent-routes.state])
       ::  track real sends for adaptive cover traffic
       =?  last-real-send.state  !=(from.req %cover)  now.bowl
-      ::  workstream 4: store alternates in retry entry for later promotion
+      ::  ws4: track profile distribution
+      =.  profile-counts.state
+        ?-  prof
+          %small   profile-counts.state(small +(small.profile-counts.state))
+          %medium  profile-counts.state(medium +(medium.profile-counts.state))
+          %large   profile-counts.state(large +(large.profile-counts.state))
+        ==
+      ::  ws2: always store retry entry for non-cover sends with reselection budget
       =/  alts=(list route)
         ?~  resolved-rset  ~
         alternates.u.resolved-rset
-      =?  retries.state  !=(~ alts)
-        [[cell i.full-route 0 (add now.bowl retry-base) alts] retries.state]
+      =?  retries.state  !=(from.req %cover)
+        [[env body-key prof alts 0 (add now.bowl retry-base) default-max-reselects] retries.state]
       =/  first-hop=(unit route-hop)  (route-head hops.u.resolved-route)
+      ::  ws4: use hop delay if specified, otherwise profile-aligned delay
       =/  first-delay=(unit @dr)
-        ?~  first-hop  ~
-        delay.u.first-hop
+        ?~  first-hop  (profile-delay prof)
+        ?^  delay.u.first-hop  delay.u.first-hop
+        (profile-delay prof)
       =^  cards  mix.state
         (dispatch-cell i.full-route cell first-delay mix.state now.bowl)
       =/  base-cards=(list card)
@@ -1740,10 +1440,34 @@
         :-  [(relay-card [%dropped `@uv`0 'contact-cue-failed'])]~
         this
       =/  raw  p.cue-result
-      ::  parse v2: [%contact-v2 app token first-hop header rngs expiry]
+      ::  parse intro-v1: [%intro-v1 app bundle-id entries reply-policy]
+      ::  or v2: [%contact-v2 app token first-hop header rngs expiry]
       ::  or legacy v1: [%contact-v1 [ship app] [token first-hop header rngs expiry]]
       =/  parse-result
         %-  mule  |.
+        ::  ws1: intro-v1 format — pick next unused entry via bundle-progress
+        ?:  ?=([%intro-v1 *] raw)
+          =/  app=app-id   ;;(@tas +<.raw)
+          =/  bid=@ux      ;;(@ux +>-.raw)
+          =/  ents=(list *)  ;;((list *) +>+<.raw)
+          =/  rpol=(unit ?)  ;;((unit ?) +>+>.raw)
+          ?~  ents  !!
+          =/  idx=@ud  (~(gut by bundle-progress.state) bid 0)
+          =/  n-entries=@ud  (lent ents)
+          ?:  (gte idx n-entries)
+            ::  bundle exhausted — signal via dummy token 0x0
+            =/  ep=endpoint  [*@p app]
+            =/  rb=reply-block  [0x0 *@p 0x0 ~ ~]
+            [`bid ep rb]
+          =/  entry  (snag idx `(list *)`ents)
+          =/  token=reply-token  ;;(@ux -.entry)
+          =/  fh=ship            ;;(@p +<.entry)
+          =/  hdr=header-box     ;;(@ux +>-.entry)
+          =/  rngs=(list @ux)    ;;((list @ux) +>+<.entry)
+          =/  exp=(unit @da)     ;;((unit @da) +>+>.entry)
+          =/  ep=endpoint  [*@p app]
+          =/  rb=reply-block  [token fh hdr rngs exp]
+          [`bid ep rb]
         ?:  ?=([%contact-v2 *] raw)
           =/  app=app-id   ;;(@tas +<.raw)
           =/  rest  +>.raw
@@ -1755,27 +1479,39 @@
           ::  dummy endpoint — real destination is in header onion
           =/  ep=endpoint  [*@p app]
           =/  rb=reply-block  [token fh hdr rngs exp]
-          [ep rb]
+          [*(unit @ux) ep rb]
         ?>  ?=([%contact-v1 *] raw)
         =/  ep  (endpoint +<.raw)
         =/  rb  (reply-block +>.raw)
-        [ep rb]
+        [*(unit @ux) ep rb]
       ?:  ?=(%| -.parse-result)
         ~&  [%skein-send %contact-parse-failed from.req]
         :-  [(relay-card [%dropped `@uv`0 'contact-parse-failed'])]~
         this
-      =/  ep=endpoint  -.p.parse-result
-      =/  rb=reply-block  +.p.parse-result
+      =/  maybe-bid=(unit @ux)  -:p.parse-result
+      =/  ep=endpoint  ->-:p.parse-result
+      =/  rb=reply-block  ->+:p.parse-result
+      ::  ws1: check for bundle exhaustion (signaled by dummy token 0x0)
+      ?:  ?&(?=(^ maybe-bid) =(0x0 token.rb))
+        ~&  [%skein-send %bundle-exhausted from.req u.maybe-bid]
+        =.  exhausted-bundles.state  (~(put in exhausted-bundles.state) u.maybe-bid)
+        :-  [(relay-card [%bundle-exhausted u.maybe-bid])]~
+        this
+      ::  ws1: advance bundle-progress for intro-v1 bundles
+      =?  bundle-progress.state  ?=(^ maybe-bid)
+        (~(put by bundle-progress.state) u.maybe-bid +((~(gut by bundle-progress.state) u.maybe-bid 0)))
       ::  build envelope — ep may be dummy for v2 bundles
-      =/  resolved-opts=send-options  [~ reply-blocks.opts.req ttl.opts.req]
+      =/  resolved-opts=send-options  [~ reply-blocks.opts.req ttl.opts.req profile.opts.req]
       =/  env=envelope
         [next-id.state (local-endpoint from.req our.bowl) ep now.bowl payload.req resolved-opts]
       =.  next-id.state  +(next-id.state)
       ::  derive body key from reply-block token
       =/  body-key=relay-key  (end [3 32] (shaz (jam [%reply-body token.rb])))
       =/  body=payload-box  (seal-body body-key env eny.bowl)
-      ::  workstream 3: auto-select profile from payload size
-      =/  prof=cell-profile  (auto-profile (met 3 body))
+      ::  ws4: use caller profile override if provided, else auto-select
+      =/  prof=cell-profile
+        ?^  profile.opts.req  u.profile.opts.req
+        (auto-profile (met 3 body))
       ::  wrap body with reply-block rngs (already in application order)
       =/  wrapped-body=payload-box  (onion-wrap-body body rngs.rb)
       ::  workstream 3: pad body and header to profile dimensions
@@ -1787,11 +1523,18 @@
         [cell-id header.padded body.padded expiry.rb prof]
       ::  track real sends for adaptive cover traffic
       =?  last-real-send.state  !=(from.req %cover)  now.bowl
+      ::  ws4: track profile distribution
+      =.  profile-counts.state
+        ?-  prof
+          %small   profile-counts.state(small +(small.profile-counts.state))
+          %medium  profile-counts.state(medium +(medium.profile-counts.state))
+          %large   profile-counts.state(large +(large.profile-counts.state))
+        ==
       =/  selected=route-log
         [cell-id `@uv`0 ep ~[first-hop.rb] now.bowl]
       =.  recent-routes.state  (trim-routes [selected recent-routes.state])
       =^  cards  mix.state
-        (dispatch-cell first-hop.rb cell ~ mix.state now.bowl)
+        (dispatch-cell first-hop.rb cell (profile-delay prof) mix.state now.bowl)
       =/  base-cards=(list card)
         :~  (relay-card [%sent cell-id ep])
         ==
@@ -1841,6 +1584,12 @@
       ::  final destination — decrypt body
       ?~  body-key.u.layer
         [(weld base [(relay-card [%dropped cell-id.cell 'no-body-key'])]~) this]
+      ::  ws1: check consumed ingress — body-key is derived from token
+      =/  ingress-key=@ux  u.body-key.u.layer
+      ?:  (~(has by consumed-entries.state) ingress-key)
+        [(weld base [(relay-card [%dropped cell-id.cell 'consumed-entry'])]~) this]
+      ::  ws1: mark entry as consumed
+      =.  consumed-entries.state  (~(put by consumed-entries.state) ingress-key now.bowl)
       =/  env=(unit envelope)
         (open-body u.body-key.u.layer u.peeled)
       ?~  env
@@ -1851,8 +1600,21 @@
               =(ship.target.u.env *@p)
           ==
         [(weld base [(relay-card [%dropped cell-id.cell 'wrong-target'])]~) this]
+      ::  ws1: attach fresh reply material so sender can reach us on new ingress
+      =/  eff-hops=@ud
+        (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
+      =/  fresh-rb
+        (build-reply-block our.bowl relays.state relay-metas.state our-seed.state our-pub.state now.bowl eny.bowl eff-hops health.state recent-routes.state trusted.state)
+      =/  fresh-blocks=(list reply-block)
+        ?~  fresh-rb  ~
+        [reply-block.u.fresh-rb]~
+      =/  fixed-env=envelope
+        u.env(target [our.bowl app.target.u.env])
+      ::  append fresh reply blocks to envelope opts
+      =/  delivered-env=envelope
+        fixed-env(reply-blocks.opts (weld reply-blocks.opts.fixed-env fresh-blocks))
       =^  cards  queues.state
-        (deliver-envelope our.bowl u.env(target [our.bowl app.target.u.env]) apps.state queues.state)
+        (deliver-envelope our.bowl delivered-env apps.state queues.state)
       [(weld base cards) this]
     ::  forward to next hop — peel body, reassign cell-id
     =/  next-cell=relay-cell  (advance-cell cell u.layer u.peeled)
@@ -1894,7 +1656,7 @@
     ::
         [%stats ~]
       :_  this
-      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state trusted.state relay-metas.state retries.state minted-contacts.state))
+      (give-json-response eyre-id (stats-json our.bowl apps.state relays.state seen.state recent-routes.state mix.state channels.state our-channels.state min-hops.state seeds.state adaptive-hops.state health.state trusted.state relay-metas.state retries.state minted-contacts.state profile-counts.state bundle-progress.state exhausted-bundles.state queued-no-route.state reselected.state exhausted-reselects.state))
     ::
         [%relays ~]
       :_  this
@@ -2032,6 +1794,15 @@
       =/  relay=relay-id
         ((ot:dejs:format ~[['relay' so:dejs:format]]) jon)
       `[%untrust-relay relay]
+    ::
+        %'set-relay-family'
+      =/  parsed
+        %.  jon
+        %-  ot:dejs:format
+        :~  ['relay' so:dejs:format]
+            ['family' so:dejs:format]
+        ==
+      `[%set-relay-family `relay-id`-.parsed `@t`+.parsed]
     ==
   ::
   ++  exec-admin-action
@@ -2165,6 +1936,20 @@
       ?~  result
         ~&  [%skein %mint-contact-failed app.act %insufficient-relays]
         `this
+      ::  ws3: clear exhausted state for old bundle at this label
+      =/  old-bundle=(unit @ux)  (~(get by minted-contacts.state) label.act)
+      =?  bundle-progress.state  ?=(^ old-bundle)
+        =/  old-cue  (mule |.((cue u.old-bundle)))
+        ?.  ?=(%& -.old-cue)  bundle-progress.state
+        ?.  ?=([%intro-v1 *] p.old-cue)  bundle-progress.state
+        =/  old-bid=@ux  ;;(@ux +>-.p.old-cue)
+        (~(del by bundle-progress.state) old-bid)
+      =?  exhausted-bundles.state  ?=(^ old-bundle)
+        =/  old-cue  (mule |.((cue u.old-bundle)))
+        ?.  ?=(%& -.old-cue)  exhausted-bundles.state
+        ?.  ?=([%intro-v1 *] p.old-cue)  exhausted-bundles.state
+        =/  old-bid=@ux  ;;(@ux +>-.p.old-cue)
+        (~(del in exhausted-bundles.state) old-bid)
       ::  Fix 2: store per-label (not per-app) so each nym gets unique bundle
       =.  minted-contacts.state  (~(put by minted-contacts.state) label.act u.result)
       ~&  [%skein %contact-minted app.act label.act]
@@ -2193,6 +1978,14 @@
       ~&  [%skein %relay-untrusted relay.act]
       :-  [(relay-card [%relay-untrusted relay.act])]~
       this
+    ::
+        %set-relay-family
+      ::  ws3: assign operator family label to relay
+      =/  cur-meta=relay-meta  (gut-relay-meta relay.act relay-metas.state now.bowl)
+      =.  relay-metas.state
+        (~(put by relay-metas.state) relay.act cur-meta(family `family.act))
+      ~&  [%skein %relay-family-set relay.act family.act]
+      `this
     ==
   --
 ::
@@ -2476,37 +2269,85 @@
       |-
       ?~  rids  ss
       $(rids t.rids, ss (~(del by ss) i.rids))
-    ::  process retry queue — workstream 4: promote alternate routes on retry
+    ::  process retry queue — rebuild cells for alternate routes on retry
+    ::  ws2: reselect fresh routes when alternates are exhausted
     =/  due=(list retry-entry)
       (skim retries.state |=(re=retry-entry (lte next-try.re now.bowl)))
     =/  not-due=(list retry-entry)
       (skip retries.state |=(re=retry-entry (lte next-try.re now.bowl)))
-    =/  retry-cards=(list card)
+    ::  ws2: for entries with exhausted routes and remaining reselect budget,
+    ::  call select-route fresh against current relay pool
+    =/  due=(list retry-entry)
       %+  turn  due
       |=  re=retry-entry
-      ::  workstream 4: if alternates available, send to alternate's first hop
-      ?~  alternates.re
-        (send-cell-card target.re cell.re)
-      =/  alt-route=route  i.alternates.re
-      ?~  hops.alt-route
-        (send-cell-card target.re cell.re)
-      (send-cell-card ship.i.hops.alt-route cell.re)
-    ::  re-queue with incremented attempts, drop maxed-out entries
-    ::  workstream 4: rotate alternates — consume the first, keep the rest
+      ?.  ?&(=(~ routes.re) (gth max-reselects.re 0))
+        re
+      =/  eff-hops=@ud
+        (effective-min-hops adaptive-hops.state min-hops.state ~(wyt by relays.state))
+      =/  retry-eny=@  (shaz (jam [eny.bowl %reselect attempts.re id.env.re]))
+      =/  fresh-rset=(unit route-set)
+        (select-route our.bowl target.env.re relays.state relay-metas.state now.bowl retry-eny eff-hops health.state recent-routes.state trusted.state)
+      ?~  fresh-rset  re
+      =/  new-routes=(list route)
+        [primary.u.fresh-rset alternates.u.fresh-rset]
+      ~&  [%skein-retry %reselected id.env.re %budget (dec max-reselects.re) %routes (lent new-routes)]
+      re(routes new-routes, max-reselects (dec max-reselects.re))
+    ::  ws2: count successful reselections and exhaustions
+    =.  reselected.state
+      %+  add  reselected.state
+      %-  lent
+      %+  skim  due
+      |=  re=retry-entry
+      ?=(^ routes.re)
+    =.  exhausted-reselects.state
+      %+  add  exhausted-reselects.state
+      %-  lent
+      %+  skim  due
+      |=  re=retry-entry
+      ?&(=(~ routes.re) =(0 max-reselects.re))
+    ::  rebuild and send cells for each due retry's next route
+    =/  retry-cards=(list card)
+      %+  murn  due
+      |=  re=retry-entry
+      ?~  routes.re  ~
+      =/  rte=route  i.routes.re
+      ::  derive fresh entropy per retry to avoid cell-id collisions
+      =/  retry-eny=@  (shaz (jam [eny.bowl attempts.re id.env.re]))
+      =/  built  (build-cell-for-route env.re body-key.re rte prof.re retry-eny now.bowl)
+      ?~  built
+        ~&  [%skein-retry %rebuild-failed id.env.re]
+        ~
+      ~&  [%skein-retry %sending id.env.re %attempt +(attempts.re) %via (lent hops.rte) %hops]
+      `(send-cell-card first-hop.u.built cell.u.built)
+    ::  re-queue with incremented attempts, drop maxed-out and fully exhausted entries
     =/  requeued=(list retry-entry)
       %+  murn  due
       |=  re=retry-entry
       ?:  (gte +(attempts.re) max-retries)  ~
+      ::  ws2: keep entry if routes remain OR reselect budget remains
+      ?:  ?&(=(~ routes.re) =(0 max-reselects.re))  ~
       =/  backoff=@dr  (mul retry-base (bex attempts.re))
-      =/  new-target=ship
-        ?~  alternates.re  target.re
-        ?~  hops.i.alternates.re  target.re
-        ship.i.hops.i.alternates.re
-      =/  new-alts=(list route)
-        ?~  alternates.re  ~
-        t.alternates.re
-      `[cell.re new-target +(attempts.re) (add now.bowl backoff) new-alts]
+      ::  rotate routes: consume head if present, keep rest
+      =/  remaining-routes=(list route)
+        ?~  routes.re  ~
+        t.routes.re
+      `[env.re body-key.re prof.re remaining-routes +(attempts.re) (add now.bowl backoff) max-reselects.re]
     =.  retries.state  (weld requeued not-due)
+    ::  ws1: prune consumed entries older than 1 day
+    =.  consumed-entries.state
+      =/  cutoff=@da  (sub now.bowl ~d1)
+      %-  ~(rep by consumed-entries.state)
+      |=  [[key=@ux at=@da] out=(map @ux @da)]
+      ?:  (lth at cutoff)  out
+      (~(put by out) key at)
+    ::  ws3: prune bundle-progress for exhausted bundles (keep active ones)
+    ::  and clear exhausted-bundles in sync
+    =.  bundle-progress.state
+      %-  ~(rep by bundle-progress.state)
+      |=  [[bid=@ux idx=@ud] out=(map @ux @ud)]
+      ?:  (~(has in exhausted-bundles.state) bid)  out
+      (~(put by out) bid idx)
+    =.  exhausted-bundles.state  ~
     ::  adaptive cover traffic: increase when quiet
     =/  quiet=?  (gth (sub now.bowl last-real-send.state) cover-quiet-threshold)
     =/  cover-cards=(list card)
