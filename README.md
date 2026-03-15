@@ -6,7 +6,7 @@
 
 Instead of sending a direct ship-to-ship poke, a local app hands `%skein` an opaque payload and asks it to deliver that payload over a routed path. The app can target either a known endpoint or an opaque contact bundle. In the contact-bundle case, the caller does not need to know the destination ship at all.
 
-`%skein` is the transport layer under `%silk`, but it is intended to be usable by any Urbit app that wants routed delivery, replyable contacts, relay discovery, and a cleaner privacy boundary than direct application pokes.
+`%skein` is the transport layer under [`%silk`](https://github.com/yapishu/silk), but it is intended to be usable by any Urbit app that wants routed delivery, replyable contacts, relay discovery, and a cleaner privacy boundary than direct application pokes.
 
 ## Why `%skein` exists
 
