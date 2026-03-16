@@ -228,18 +228,17 @@
   ?.  (veri:ed:crypto sig.i.pool desc-msg pub.i.pool)
     ~&  [%skein %merge-relays %bad-sig relay.i.pool]
     $(pool t.pool)
-  ::  update metadata for existing relay (add source)
+  ::  update existing relay: refresh descriptor (including pubkey) + metadata
   ?:  (~(has in ships) ship.i.pool)
-    ::  already have this ship — update source tracking for its relay-id
-    ?:  (~(has by relays) relay.i.pool)
-      =/  cur-meta=relay-meta  (gut-relay-meta relay.i.pool metas now)
-      =/  new-sources=(set ship)  (~(put in sources.cur-meta) source)
-      =/  new-status=relay-status
-        (compute-relay-status relay.i.pool new-sources trusted)
-      =/  upd=relay-meta
-        [new-sources first-seen.cur-meta now new-status family.cur-meta]
-      =.  metas  (~(put by metas) relay.i.pool upd)
-      $(pool t.pool)
+    =/  cur-meta=relay-meta  (gut-relay-meta relay.i.pool metas now)
+    =/  new-sources=(set ship)  (~(put in sources.cur-meta) source)
+    =/  new-status=relay-status
+      (compute-relay-status relay.i.pool new-sources trusted)
+    =/  upd=relay-meta
+      [new-sources first-seen.cur-meta now new-status family.cur-meta]
+    ::  always update descriptor (pubkey may have changed after nuke/rekey)
+    =.  relays  (~(put by relays) relay.i.pool i.pool)
+    =.  metas   (~(put by metas) relay.i.pool upd)
     $(pool t.pool)
   ::  new relay — initialize metadata
   =/  init-status=relay-status
@@ -1276,9 +1275,6 @@
       (end [3 32] (shaz (jam [%skein-relay-seed our.bowl eny.bowl now.bowl])))
     =.  our-seed.state  (end [3 32] our-seed.state)
     =.  our-pub.state  `@ux`(puck:ed:crypto our-seed.state)
-    ::  clear relays to purge any bad descriptors from pre-truncation inits
-    =.  relays.state  ~
-    =.  relay-metas.state  ~
     ::  bootstrap: subscribe to seed relays to discover network
     =/  boot-cards=(list card)
       %+  murn  ~(tap in seeds.state)
@@ -1561,6 +1557,7 @@
     =/  layer=(unit header-layer)
       (open-local-header cell our-seed.state)
     ?~  layer
+      ~&  [%skein-cell %undecryptable cell-id.cell %from src.bowl]
       :_  this
       [(relay-card [%dropped cell-id.cell 'undecryptable'])]~
     =/  base=(list card)
@@ -1580,7 +1577,9 @@
     ?~  peeled
       [(weld base [(relay-card [%dropped cell-id.cell 'body-peel-failed'])]~) this]
     ::  check if we are the final destination
+    ~&  [%skein-cell %decrypted cell-id.cell %next ?=(^ next.u.layer) %from src.bowl]
     ?~  next.u.layer
+      ~&  [%skein-cell %final-destination cell-id.cell]
       ::  final destination — decrypt body
       ?~  body-key.u.layer
         [(weld base [(relay-card [%dropped cell-id.cell 'no-body-key'])]~) this]
@@ -1617,6 +1616,7 @@
         (deliver-envelope our.bowl delivered-env apps.state queues.state)
       [(weld base cards) this]
     ::  forward to next hop — peel body, reassign cell-id
+    ~&  [%skein-cell %forwarding cell-id.cell %to (scot %p u.next.u.layer)]
     =/  next-cell=relay-cell  (advance-cell cell u.layer u.peeled)
     =^  cards  mix.state
       (dispatch-cell u.next.u.layer next-cell delay.u.layer mix.state now.bowl)
@@ -1852,6 +1852,8 @@
     ::
         %clear-seen
       =.  seen.state  ~
+      =.  retries.state  ~
+      ~&  [%skein %cleared-seen-and-retries]
       :-  [(relay-card [%replay-cleared ~])]~
       this
     ::
